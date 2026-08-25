@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "henri.desktop-icons",
   "name": "Desktop Icons",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "author": "Henri Dumortier",
   "license": "MIT",
   "description": "Windows-style files and shortcuts on the wallpaper. Drop items in ~/Desktop, or right-click a file in Files and choose Send to Desktop.",

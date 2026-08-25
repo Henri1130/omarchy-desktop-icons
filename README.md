@@ -14,6 +14,7 @@ Windows-style files and shortcuts on the Omarchy wallpaper.
 - Click an icon to open it; drag to move it (snaps to a grid)
 - Right-click empty wallpaper: New Folder, New Shortcut, Pin application, Add files
 - Right-click an icon: Open, Show in Files, Move to Trash
+- Drag an icon onto Trash, or drop files from Files onto Trash, to delete them
 - Drag files from Files onto the wallpaper to copy them there
 - Click empty wallpaper five times to switch the background (`Super+Ctrl+Space` still works)
 
@@ -82,7 +83,7 @@ o.window("org.omarchy.add-to-desktop", { float = true, center = true })
 | Move an icon | Drag it; it snaps to the grid |
 | Put a file on the desktop | Drag it onto the wallpaper, or copy it into `~/Desktop` |
 | Pin a shortcut | Right-click wallpaper → Pin application… / New Shortcut… |
-| Trash | Right-click an icon → Move to Trash, or press Delete |
+| Trash | Right-click an icon → Move to Trash, press Delete, or drag onto Trash |
 | Change wallpaper | Click empty wallpaper five times, or `Super+Ctrl+Space` |
 
 ## Update

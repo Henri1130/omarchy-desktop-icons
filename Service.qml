@@ -14,12 +14,12 @@ Item {
   property var positions: ({})
   property string desktopPath: Quickshell.env("HOME") + "/Desktop"
   property string selectedId: ""
-  property int iconSize: 48
-  property int cellW: 96
-  property int cellH: 108
-  property int padLeft: 16
-  property int padRight: 16
-  property int padBottom: 16
+  property int iconSize: 72
+  property int cellW: 144
+  property int cellH: 162
+  property int padLeft: 24
+  property int padRight: 24
+  property int padBottom: 24
 
   readonly property string home: Quickshell.env("HOME")
   readonly property string pluginDir: (manifest && manifest.__sourceDir)
@@ -33,7 +33,7 @@ Item {
   function padTopFor(screen) {
     var bar = shell && shell.bar ? shell.bar : null
     var barSize = bar && bar.barSize ? bar.barSize : 26
-    var extra = 16
+    var extra = 24
     if (bar && bar.position === "top" && !bar.barHidden)
       return barSize + extra
     return extra
@@ -43,8 +43,12 @@ Item {
     var bar = shell && shell.bar ? shell.bar : null
     var barSize = bar && bar.barSize ? bar.barSize : 26
     if (bar && bar.position === "left" && !bar.barHidden)
-      return barSize + 16
+      return barSize + 24
     return root.padLeft
+  }
+
+  function isTrash(item) {
+    return !!(item && item.kind === "trash")
   }
 
   function iconSource(item) {
@@ -72,10 +76,18 @@ Item {
     Quickshell.execDetached(["/usr/bin/python3", root.indexScript, "--open", item.path])
   }
 
-  function trashItem(item) {
-    if (!item || !item.path) return
-    Quickshell.execDetached(["gio", "trash", item.path])
+  function trashUrls(urls) {
+    if (!urls || urls.length === 0) return
+    var cmd = ["/usr/bin/python3", root.indexScript, "--trash"]
+    for (var i = 0; i < urls.length; i++)
+      cmd.push(String(urls[i]))
+    Quickshell.execDetached(cmd)
     Qt.callLater(root.refresh)
+  }
+
+  function trashItem(item) {
+    if (!item || !item.path || root.isTrash(item)) return
+    root.trashUrls([item.path])
   }
 
   function revealItem(item) {
@@ -264,24 +276,61 @@ Item {
         }
       }
 
+      function itemAt(x, y, exceptId) {
+        for (var i = 0; i < host.items.length; i++) {
+          var item = host.items[i]
+          if (exceptId && item.id === exceptId)
+            continue
+          var pos = panel.posFor(item, i)
+          if (x >= pos.x && x < pos.x + host.cellW && y >= pos.y && y < pos.y + host.cellH)
+            return item
+        }
+        return null
+      }
+
       function closeMenu() {
-        panel.menuKind = ""
-        panel.menuItem = null
+        menuKind = ""
+        menuItem = null
       }
 
       function openEmptyMenu(mouse) {
-        panel.menuKind = "empty"
-        panel.menuItem = null
-        panel.menuX = mouse.x
-        panel.menuY = mouse.y
+        menuKind = "empty"
+        menuItem = null
+        menuX = mouse.x
+        menuY = mouse.y
       }
 
       function openItemMenu(item, iconItem, mouse) {
-        panel.menuKind = "item"
-        panel.menuItem = item
-        var p = panel.contentItem.mapFromItem(iconItem, mouse.x, mouse.y)
-        panel.menuX = p.x
-        panel.menuY = p.y
+        menuKind = "item"
+        menuItem = item
+        var p = contentItem.mapFromItem(iconItem, mouse.x, mouse.y)
+        menuX = p.x
+        menuY = p.y
+      }
+
+      readonly property var menuEntries: {
+        if (menuKind === "item") {
+          if (host.isTrash(menuItem))
+            return [
+              { action: "open", label: "Open Trash" },
+              { action: "files", label: "Show in Files" }
+            ]
+          return [
+            { action: "open", label: "Open" },
+            { action: "files", label: "Show in Files" },
+            { action: "trash", label: "Move to Trash" }
+          ]
+        }
+        if (menuKind === "empty")
+          return [
+            { action: "folder", label: "New Folder" },
+            { action: "shortcut", label: "New Shortcut…" },
+            { action: "pin", label: "Pin application…" },
+            { action: "addfiles", label: "Add files…" },
+            { action: "files", label: "Open Desktop Folder" },
+            { action: "refresh", label: "Refresh" }
+          ]
+        return []
       }
 
       Timer {
@@ -353,7 +402,11 @@ Item {
           }
           if (urls.length > 0) {
             drop.acceptProposedAction()
-            host.placeUrls(urls, host.dropMode(drop))
+            var target = panel.itemAt(drop.x, drop.y, "")
+            if (target && host.isTrash(target))
+              host.trashUrls(urls)
+            else
+              host.placeUrls(urls, host.dropMode(drop))
           }
         }
       }
@@ -425,7 +478,7 @@ Item {
               color: "white"
               style: Text.Outline
               styleColor: "#cc000000"
-              font.pixelSize: 12
+              font.pixelSize: 18
               font.family: Style.fontFamily
               wrapMode: Text.Wrap
               elide: Text.ElideRight
@@ -444,7 +497,7 @@ Item {
             cursorShape: Qt.PointingHandCursor
             drag.target: iconRoot
             drag.axis: Drag.XAndYAxis
-            drag.threshold: 24
+            drag.threshold: 36
             drag.minimumX: 0
             drag.minimumY: 0
             drag.maximumX: Math.max(0, panel.width - iconRoot.width)
@@ -457,6 +510,15 @@ Item {
             }
             onReleased: function(mouse) {
               if (!iconMouse.drag.active) return
+              var target = panel.itemAt(
+                iconRoot.x + iconRoot.width / 2,
+                iconRoot.y + iconRoot.height / 2,
+                iconRoot.modelData.id
+              )
+              if (target && panel.host.isTrash(target) && !panel.host.isTrash(iconRoot.modelData)) {
+                panel.host.trashItem(iconRoot.modelData)
+                return
+              }
               var snapped = panel.snap(iconRoot.x, iconRoot.y)
               iconRoot.x = snapped.x
               iconRoot.y = snapped.y
@@ -475,21 +537,77 @@ Item {
               panel.host.openItem(iconRoot.modelData)
             }
           }
+
+          DropArea {
+            anchors.fill: parent
+            z: 3
+            enabled: panel.host.isTrash(iconRoot.modelData)
+            keys: ["text/uri-list"]
+            onEntered: panel.dropping = true
+            onExited: panel.dropping = false
+            onDropped: function(drop) {
+              panel.dropping = false
+              if (!panel.host.isTrash(iconRoot.modelData))
+                return
+              var urls = []
+              if (drop.urls) {
+                for (var i = 0; i < drop.urls.length; i++)
+                  urls.push(String(drop.urls[i]))
+              }
+              if (urls.length > 0) {
+                drop.acceptProposedAction()
+                panel.host.trashUrls(urls)
+              }
+            }
+          }
         }
       }
 
       Rectangle {
         id: menuBox
-        visible: panel.menuKind !== ""
-        z: 10
+        visible: menuKind !== ""
+        z: 20
         width: menuCol.implicitWidth + 16
         height: menuCol.implicitHeight + 12
         radius: 8
         color: Color.popups.background
         border.width: 1
         border.color: Color.popups.border
-        x: Math.min(Math.max(8, panel.menuX), Math.max(8, panel.width - width - 8))
-        y: Math.min(Math.max(8, panel.menuY), Math.max(8, panel.height - height - 8))
+        x: Math.min(Math.max(8, menuX), Math.max(8, panel.width - width - 8))
+        y: Math.min(Math.max(8, menuY), Math.max(8, panel.height - height - 8))
+
+        // Bind plugin state onto this item so menu JS never needs the `panel` id.
+        property var pluginHost: host
+        property var currentItem: menuItem
+        property int closeTick: 0
+
+        function activateMenu(action) {
+          var item = currentItem
+          var plugin = pluginHost
+          closeTick += 1
+          if (!plugin)
+            return
+          if (action === "open")
+            plugin.openItem(item)
+          else if (action === "trash")
+            plugin.trashItem(item)
+          else if (action === "folder")
+            plugin.newFolder()
+          else if (action === "shortcut")
+            plugin.newShortcut()
+          else if (action === "pin")
+            plugin.pinApp()
+          else if (action === "addfiles")
+            plugin.addFiles()
+          else if (action === "refresh")
+            plugin.refresh()
+          else if (action === "files") {
+            if (item && item.path)
+              plugin.revealItem(item)
+            else
+              plugin.openDesktopFolder()
+          }
+        }
 
         Column {
           id: menuCol
@@ -498,61 +616,50 @@ Item {
           spacing: 2
 
           Repeater {
-            model: panel.menuKind === "item"
-              ? [
-                  { id: "open", label: "Open" },
-                  { id: "files", label: "Show in Files" },
-                  { id: "trash", label: "Move to Trash" }
-                ]
-              : [
-                  { id: "folder", label: "New Folder" },
-                  { id: "shortcut", label: "New Shortcut…" },
-                  { id: "pin", label: "Pin application…" },
-                  { id: "addfiles", label: "Add files…" },
-                  { id: "files", label: "Open Desktop Folder" },
-                  { id: "refresh", label: "Refresh" }
-                ]
+            model: menuEntries
 
             Rectangle {
-              required property var modelData
               width: menuCol.width
               height: 28
               radius: 4
-              color: menuHover.hovered ? Util.alpha(Color.popups.text, 0.12) : "transparent"
-
-              HoverHandler { id: menuHover }
+              color: rowMouse.containsMouse ? Util.alpha(Color.popups.text, 0.12) : "transparent"
 
               Text {
                 anchors.verticalCenter: parent.verticalCenter
                 anchors.left: parent.left
                 anchors.leftMargin: 10
-                text: parent.modelData.label
+                text: modelData.label
                 color: Color.popups.text
                 font.pixelSize: 13
                 font.family: Style.fontFamily
               }
 
               MouseArea {
+                id: rowMouse
                 anchors.fill: parent
-                onClicked: {
-                  var action = parent.modelData.id
-                  var item = panel.menuItem
-                  panel.closeMenu()
-                  if (action === "open") panel.host.openItem(item)
-                  else if (action === "trash") panel.host.trashItem(item)
-                  else if (action === "folder") panel.host.newFolder()
-                  else if (action === "shortcut") panel.host.newShortcut()
-                  else if (action === "pin") panel.host.pinApp()
-                  else if (action === "addfiles") panel.host.addFiles()
-                  else if (action === "refresh") panel.host.refresh()
-                  else if (action === "files") {
-                    if (item && item.path) panel.host.revealItem(item)
-                    else panel.host.openDesktopFolder()
+                hoverEnabled: true
+                onClicked: function(mouse) {
+                  var action = String(modelData.action || "")
+                  var node = rowMouse
+                  while (node) {
+                    if (typeof node.activateMenu === "function") {
+                      node.activateMenu(action)
+                      return
+                    }
+                    node = node.parent
                   }
                 }
               }
             }
           }
+        }
+      }
+
+      Connections {
+        target: menuBox
+        function onCloseTickChanged() {
+          menuKind = ""
+          menuItem = null
         }
       }
     }
