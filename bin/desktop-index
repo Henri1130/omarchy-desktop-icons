@@ -1,0 +1,274 @@
+#!/usr/bin/python3
+"""List, open, and place items on the Desktop for the Omarchy desktop-icons plugin."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+IMAGE_SUFFIXES = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".svg",
+    ".avif",
+    ".jxl",
+}
+
+
+def desktop_dir() -> Path:
+    special = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DESKTOP)
+    path = Path(special) if special else Path.home() / "Desktop"
+    if path.resolve() == Path.home().resolve():
+        path = Path.home() / "Desktop"
+    path.mkdir(parents=True, exist_ok=True)
+    return path.resolve()
+
+
+def read_desktop_entry(path: Path) -> dict[str, str]:
+    try:
+        keyfile = GLib.KeyFile()
+        keyfile.load_from_file(str(path), GLib.KeyFileFlags.NONE)
+        data = {}
+        for key in ("Name", "Icon", "Type", "URL", "Exec"):
+            try:
+                data[key] = keyfile.get_string("Desktop Entry", key)
+            except GLib.Error:
+                pass
+        return data
+    except GLib.Error:
+        return {}
+
+
+def guess_icon(path: Path) -> str:
+    if path.is_dir():
+        return "folder"
+    content_type, _uncertain = Gio.content_type_guess(str(path), None)
+    icon = Gio.content_type_get_generic_icon_name(content_type) if content_type else None
+    return icon or "text-x-generic"
+
+
+def item_for(path: Path) -> dict:
+    name = path.name
+    icon = guess_icon(path)
+    preview = ""
+    kind = "folder" if path.is_dir() else "file"
+    suffix = path.suffix.lower()
+
+    if suffix == ".desktop":
+        entry = read_desktop_entry(path)
+        name = entry.get("Name") or path.stem
+        icon = entry.get("Icon") or "application-x-executable"
+        kind = "launcher"
+    elif suffix == ".url":
+        name = path.stem
+        icon = "text-html"
+        kind = "link"
+    elif suffix in IMAGE_SUFFIXES:
+        preview = str(path)
+        kind = "image"
+
+    if icon.startswith("file://"):
+        icon = icon[7:]
+
+    return {
+        "id": path.name,
+        "name": name,
+        "path": str(path),
+        "icon": icon,
+        "preview": preview,
+        "isDir": path.is_dir(),
+        "kind": kind,
+    }
+
+
+def list_items() -> dict:
+    desktop = desktop_dir()
+    items = []
+    for path in sorted(desktop.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+        if path.name.startswith("."):
+            continue
+        items.append(item_for(path))
+    return {"desktop": str(desktop), "items": items}
+
+
+def path_from_uri(value: str) -> Path:
+    text = value.strip().strip("<>")
+    if text.startswith("file://"):
+        parsed = urlparse(text)
+        return Path(unquote(parsed.path))
+    return Path(os.path.expanduser(text)).resolve()
+
+
+def unique_dest(directory: Path, name: str) -> Path:
+    candidate = directory / name
+    if not candidate.exists():
+        return candidate
+    stem = Path(name).stem
+    suffix = Path(name).suffix
+    if name.endswith(suffix) and suffix:
+        base = name[: -len(suffix)]
+    else:
+        base = name
+        suffix = ""
+    index = 2
+    while True:
+        candidate = directory / f"{base} {index}{suffix}"
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
+def open_path(path: Path) -> None:
+    path = path.expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"Path not found: {path}")
+
+    suffix = path.suffix.lower()
+    if suffix == ".url":
+        helper = shutil.which("create-hyperlink") or str(
+            Path.home() / ".local/bin/create-hyperlink"
+        )
+        Gio.Subprocess.new([helper, "--open", str(path)], Gio.SubprocessFlags.NONE)
+        return
+
+    if suffix == ".desktop":
+        entry = read_desktop_entry(path)
+        entry_type = (entry.get("Type") or "Application").strip()
+        if entry_type.lower() == "link":
+            url = (entry.get("URL") or "").strip()
+            if not url:
+                raise ValueError(f"Shortcut has no URL: {path.name}")
+            if url.startswith("/") or url.startswith("~"):
+                url = Path(os.path.expanduser(url)).resolve().as_uri()
+            Gio.AppInfo.launch_default_for_uri(url, None)
+            return
+        info = Gio.DesktopAppInfo.new_from_filename(str(path))
+        if info is not None:
+            info.launch([], None)
+            return
+        exec_line = entry.get("Exec")
+        if exec_line:
+            argv = [part for part in shlex.split(exec_line) if not part.startswith("%")]
+            if argv:
+                Gio.Subprocess.new(argv, Gio.SubprocessFlags.NONE)
+                return
+        raise ValueError(f"Could not launch {path.name}")
+
+    Gio.AppInfo.launch_default_for_uri(path.resolve().as_uri(), None)
+
+
+def place_one(source: Path, desktop: Path, mode: str) -> Path:
+    source = source.expanduser().resolve()
+    if not source.exists():
+        raise FileNotFoundError(f"Path not found: {source}")
+    if source == desktop:
+        raise ValueError("Cannot place the Desktop folder onto itself")
+    if source.parent == desktop and mode != "link":
+        return source
+
+    if mode == "link" or (
+        mode == "copy"
+        and source.suffix.lower() == ".desktop"
+        and ("/applications" in str(source.parent) or source.parent.name == "applications")
+    ):
+        helper = (
+            shutil.which("add-to-desktop")
+            or str(Path(__file__).resolve().parent / "add-to-desktop")
+            or str(Path.home() / ".local/bin/add-to-desktop")
+        )
+        subprocess.run([helper, str(source)], check=False)
+        return desktop / source.name
+
+    dest = unique_dest(desktop, source.name)
+    if mode == "move":
+        shutil.move(str(source), str(dest))
+        return dest
+    if source.is_dir():
+        shutil.copytree(source, dest, dirs_exist_ok=False)
+    else:
+        shutil.copy2(source, dest)
+        if dest.suffix.lower() == ".desktop":
+            dest.chmod(dest.stat().st_mode | 0o111)
+    return dest
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Desktop icon helper")
+    parser.add_argument("--open", nargs="+", metavar="PATH", help="Open desktop items")
+    parser.add_argument(
+        "--place",
+        nargs="+",
+        metavar="PATH",
+        help="Copy, move, or pin files onto the Desktop",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("copy", "move", "link"),
+        default="copy",
+        help="How --place should add items (default: copy)",
+    )
+    args = parser.parse_args(argv)
+
+    if args.open:
+        for raw in args.open:
+            open_path(Path(raw))
+        return 0
+
+    if args.place:
+        desktop = desktop_dir()
+        for raw in args.place:
+            place_one(path_from_uri(raw), desktop, args.mode)
+        return 0
+
+    json.dump(list_items(), sys.stdout, ensure_ascii=False)
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        if "--open" in sys.argv or "--place" in sys.argv:
+            try:
+                Gio.Subprocess.new(
+                    [
+                        "notify-send",
+                        "-u",
+                        "normal",
+                        "-i",
+                        "dialog-error",
+                        "Desktop",
+                        str(error),
+                    ],
+                    Gio.SubprocessFlags.NONE,
+                )
+            except Exception:
+                print(error, file=sys.stderr)
+            raise SystemExit(1)
+        json.dump(
+            {
+                "desktop": str(Path.home() / "Desktop"),
+                "items": [],
+                "error": str(error),
+            },
+            sys.stdout,
+        )
+        sys.stdout.write("\n")
+        raise SystemExit(1)
