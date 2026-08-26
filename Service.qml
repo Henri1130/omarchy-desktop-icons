@@ -20,6 +20,11 @@ Item {
   property int padLeft: 24
   property int padRight: 24
   property int padBottom: 24
+  readonly property int maxItems: 256
+  readonly property int maxListChars: 262144
+  readonly property int maxNameLength: 120
+  property var pendingTrust: null
+  property string pendingTrustScreen: ""
 
   readonly property string home: Quickshell.env("HOME")
   readonly property string pluginDir: (manifest && manifest.__sourceDir)
@@ -51,19 +56,112 @@ Item {
     return !!(item && item.kind === "trash")
   }
 
-  function iconSource(item) {
-    if (!item) return ""
-    if (item.preview)
-      return Util.fileUrl(item.preview)
-    var icon = String(item.icon || "")
-    if (icon.indexOf("file://") === 0 || icon.indexOf("image://") === 0)
-      return icon
-    if (icon.charAt(0) === "/")
-      return Util.fileUrl(icon)
-    var themed = Quickshell.iconPath(icon, true)
+  function isUntrustedLauncher(item) {
+    return !!(item && item.kind === "launcher" && item.trusted !== true)
+  }
+
+  function isBlockedIconUrl(value) {
+    var lower = String(value || "").toLowerCase()
+    return lower.indexOf("http:") === 0
+      || lower.indexOf("https:") === 0
+      || lower.indexOf("ftp:") === 0
+      || lower.indexOf("ftps:") === 0
+      || lower.indexOf("sftp:") === 0
+      || lower.indexOf("smb:") === 0
+      || lower.indexOf("nfs:") === 0
+      || lower.indexOf("dav:") === 0
+      || lower.indexOf("data:") === 0
+      || lower.indexOf("qrc:") === 0
+      || lower.indexOf("image:") === 0
+      || lower.indexOf("qt:") === 0
+  }
+
+  function isLocalFileUrl(value) {
+    var icon = String(value || "")
+    if (icon.indexOf("file://") !== 0)
+      return false
+    var rest = icon.slice(7)
+    return rest.charAt(0) === "/" && rest.charAt(1) !== "/"
+  }
+
+  function plainText(value, maxLen) {
+    var text = String(value || "").replace(/[<>\u0001-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
+    text = text.replace(/\s+/g, " ").trim()
+    var limit = maxLen || root.maxNameLength
+    if (text.length > limit)
+      text = text.slice(0, limit)
+    return text
+  }
+
+  function fallbackIcon(item) {
+    return Quickshell.iconPath(item && item.isDir ? "folder" : "text-x-generic", true)
+  }
+
+  function localFileUrl(path) {
+    var value = String(path || "")
+    if (root.isBlockedIconUrl(value))
+      return ""
+    if (root.isLocalFileUrl(value))
+      return value
+    if (!value || value.charAt(0) !== "/" || value.indexOf("//") === 0)
+      return ""
+    if (value.indexOf("://") !== -1)
+      return ""
+    return Util.fileUrl(value)
+  }
+
+  function safeIconSource(icon, item) {
+    var value = String(icon || "")
+    var fallback = root.fallbackIcon(item)
+    if (!value || root.isBlockedIconUrl(value))
+      return fallback
+    if (root.isLocalFileUrl(value))
+      return value
+    if (value.charAt(0) === "/") {
+      var local = root.localFileUrl(value)
+      return local || fallback
+    }
+    if (value.indexOf("/") >= 0 || value.indexOf("\\") >= 0 || value.indexOf(":") >= 0)
+      return fallback
+    if (!/^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(value))
+      return fallback
+    var themed = Quickshell.iconPath(value, true)
     if (themed && themed.length > 0)
       return themed
-    return Quickshell.iconPath(item.isDir ? "folder" : "text-x-generic", true)
+    return fallback
+  }
+
+  function iconSource(item) {
+    if (!item) return ""
+    var preview = String(item.preview || "")
+    if (preview) {
+      var previewUrl = root.localFileUrl(preview)
+      if (previewUrl)
+        return previewUrl
+    }
+    return root.safeIconSource(item.icon, item)
+  }
+
+  function sanitizeItem(item) {
+    if (!item || typeof item !== "object")
+      return null
+    var kind = root.plainText(item.kind, 32)
+    var icon = String(item.icon || "")
+    var preview = String(item.preview || "")
+    if (root.isBlockedIconUrl(icon))
+      icon = ""
+    if (root.isBlockedIconUrl(preview))
+      preview = ""
+    return {
+      id: String(item.id || "").slice(0, 255),
+      name: root.plainText(item.name, root.maxNameLength) || "Item",
+      path: String(item.path || ""),
+      icon: icon,
+      preview: preview,
+      isDir: !!item.isDir,
+      kind: kind,
+      trusted: item.trusted === true || kind !== "launcher"
+    }
   }
 
   function refresh() {
@@ -76,10 +174,40 @@ Item {
     Quickshell.execDetached(["/usr/bin/python3", root.indexScript, "--open", item.path])
   }
 
+  function openOrConfirm(item, screenName) {
+    if (!item || !item.path) return
+    if (root.isUntrustedLauncher(item)) {
+      root.pendingTrust = item
+      root.pendingTrustScreen = screenName || ""
+      return
+    }
+    root.openItem(item)
+  }
+
+  function clearTrustPrompt() {
+    root.pendingTrust = null
+    root.pendingTrustScreen = ""
+  }
+
+  function allowLaunching(item) {
+    if (!item || !item.path) return
+    Quickshell.execDetached(["/usr/bin/python3", root.indexScript, "--trust", item.path])
+    root.clearTrustPrompt()
+    Qt.callLater(root.refresh)
+  }
+
+  function trustAndOpen(item) {
+    if (!item || !item.path) return
+    Quickshell.execDetached(["/usr/bin/python3", root.indexScript, "--trust-and-open", item.path])
+    root.clearTrustPrompt()
+    Qt.callLater(root.refresh)
+  }
+
   function trashUrls(urls) {
     if (!urls || urls.length === 0) return
     var cmd = ["/usr/bin/python3", root.indexScript, "--trash"]
-    for (var i = 0; i < urls.length; i++)
+    var limit = Math.min(urls.length, root.maxItems)
+    for (var i = 0; i < limit; i++)
       cmd.push(String(urls[i]))
     Quickshell.execDetached(cmd)
     Qt.callLater(root.refresh)
@@ -134,7 +262,8 @@ Item {
   function placeUrls(urls, mode) {
     if (!urls || urls.length === 0) return
     var cmd = ["/usr/bin/python3", root.indexScript, "--mode", mode || "copy", "--place"]
-    for (var i = 0; i < urls.length; i++)
+    var limit = Math.min(urls.length, root.maxItems)
+    for (var i = 0; i < limit; i++)
       cmd.push(String(urls[i]))
     Quickshell.execDetached(cmd)
     Qt.callLater(root.refresh)
@@ -149,13 +278,40 @@ Item {
 
   function applyList(raw) {
     var text = String(raw || "").trim()
-    if (!text || text === root.itemsJson) return
+    if (!text)
+      return
+    if (text.length > root.maxListChars) {
+      console.warn("desktop-icons: index output exceeded resource ceiling")
+      return
+    }
     try {
       var data = JSON.parse(text)
-      if (data.desktop)
-        root.desktopPath = data.desktop
-      root.itemsJson = text
-      root.items = Array.isArray(data.items) ? data.items : []
+      var incoming = Array.isArray(data.items) ? data.items.slice(0, root.maxItems) : []
+      var items = []
+      for (var i = 0; i < incoming.length; i++) {
+        var item = root.sanitizeItem(incoming[i])
+        if (item && item.id)
+          items.push(item)
+      }
+      var desktop = data.desktop ? String(data.desktop) : root.desktopPath
+      var next = JSON.stringify({ desktop: desktop, items: items })
+      if (next === root.itemsJson)
+        return
+      root.desktopPath = desktop
+      root.itemsJson = next
+      root.items = items
+      if (root.pendingTrust && root.pendingTrust.id) {
+        var pendingId = root.pendingTrust.id
+        var stillUntrusted = false
+        for (var j = 0; j < items.length; j++) {
+          if (items[j].id === pendingId && root.isUntrustedLauncher(items[j])) {
+            stillUntrusted = true
+            break
+          }
+        }
+        if (!stillUntrusted)
+          root.clearTrustPrompt()
+      }
     } catch (e) {
       console.warn("desktop-icons: failed to parse index:", e)
     }
@@ -315,6 +471,13 @@ Item {
               { action: "open", label: "Open Trash" },
               { action: "files", label: "Show in Files" }
             ]
+          if (host.isUntrustedLauncher(menuItem))
+            return [
+              { action: "trust-open", label: "Trust and Open" },
+              { action: "trust", label: "Allow launching" },
+              { action: "files", label: "Show in Files" },
+              { action: "trash", label: "Move to Trash" }
+            ]
           return [
             { action: "open", label: "Open" },
             { action: "files", label: "Show in Files" },
@@ -348,6 +511,8 @@ Item {
         focus: true
         Keys.onPressed: function(event) {
           if (event.key === Qt.Key_Escape) {
+            if (host.pendingTrust)
+              host.clearTrustPrompt()
             panel.closeMenu()
             event.accepted = true
           } else if (event.key === Qt.Key_Delete && host.selectedId) {
@@ -362,7 +527,7 @@ Item {
           } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
             for (var j = 0; j < host.items.length; j++) {
               if (host.items[j].id === host.selectedId) {
-                host.openItem(host.items[j])
+                host.openOrConfirm(host.items[j], panel.screenName)
                 break
               }
             }
@@ -372,6 +537,13 @@ Item {
         onClicked: function(mouse) {
           host.selectedId = ""
           emptyMouse.forceActiveFocus()
+          if (host.pendingTrust) {
+            host.clearTrustPrompt()
+            panel.emptyClicks = 0
+            if (mouse.button === Qt.RightButton)
+              panel.openEmptyMenu(mouse)
+            return
+          }
           if (mouse.button === Qt.RightButton) {
             panel.emptyClicks = 0
             panel.openEmptyMenu(mouse)
@@ -461,20 +633,48 @@ Item {
             anchors.margins: 6
             spacing: 4
 
-            Image {
+            Item {
               width: panel.host.iconSize
               height: panel.host.iconSize
               anchors.horizontalCenter: parent.horizontalCenter
-              source: panel.host.iconSource(iconRoot.modelData)
-              fillMode: Image.PreserveAspectFit
-              asynchronous: true
-              sourceSize.width: panel.host.iconSize * Screen.devicePixelRatio
-              sourceSize.height: panel.host.iconSize * Screen.devicePixelRatio
+
+              Image {
+                anchors.fill: parent
+                source: panel.host.iconSource(iconRoot.modelData)
+                fillMode: Image.PreserveAspectFit
+                asynchronous: true
+                cache: true
+                sourceSize.width: panel.host.iconSize * Screen.devicePixelRatio
+                sourceSize.height: panel.host.iconSize * Screen.devicePixelRatio
+              }
+
+              Rectangle {
+                visible: panel.host.isUntrustedLauncher(iconRoot.modelData)
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                width: 20
+                height: 20
+                radius: 10
+                color: "#cc8a1515"
+                border.width: 1
+                border.color: "#eeffffff"
+
+                Text {
+                  anchors.centerIn: parent
+                  text: "!"
+                  textFormat: Text.PlainText
+                  color: "white"
+                  font.pixelSize: 13
+                  font.bold: true
+                  font.family: Style.fontFamily
+                }
+              }
             }
 
             Text {
               width: parent.width
-              text: iconRoot.modelData.name
+              text: panel.host.plainText(iconRoot.modelData.name)
+              textFormat: Text.PlainText
               color: "white"
               style: Text.Outline
               styleColor: "#cc000000"
@@ -534,7 +734,7 @@ Item {
               if (Math.abs(iconRoot.x - iconRoot.pressX) > 8 || Math.abs(iconRoot.y - iconRoot.pressY) > 8)
                 return
               panel.closeMenu()
-              panel.host.openItem(iconRoot.modelData)
+              panel.host.openOrConfirm(iconRoot.modelData, panel.screenName)
             }
           }
 
@@ -579,16 +779,22 @@ Item {
         // Bind plugin state onto this item so menu JS never needs the `panel` id.
         property var pluginHost: host
         property var currentItem: menuItem
+        property string currentScreen: panel.screenName
         property int closeTick: 0
 
         function activateMenu(action) {
           var item = currentItem
           var plugin = pluginHost
+          var screenName = currentScreen
           closeTick += 1
           if (!plugin)
             return
           if (action === "open")
-            plugin.openItem(item)
+            plugin.openOrConfirm(item, screenName)
+          else if (action === "trust")
+            plugin.allowLaunching(item)
+          else if (action === "trust-open")
+            plugin.trustAndOpen(item)
           else if (action === "trash")
             plugin.trashItem(item)
           else if (action === "folder")
@@ -628,7 +834,8 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 anchors.left: parent.left
                 anchors.leftMargin: 10
-                text: modelData.label
+                text: String(modelData.label || "")
+                textFormat: Text.PlainText
                 color: Color.popups.text
                 font.pixelSize: 13
                 font.family: Style.fontFamily
@@ -660,6 +867,122 @@ Item {
         function onCloseTickChanged() {
           menuKind = ""
           menuItem = null
+        }
+      }
+
+      Rectangle {
+        id: trustBox
+        visible: {
+          var item = host.pendingTrust
+          if (!item)
+            return false
+          if (host.pendingTrustScreen && host.pendingTrustScreen !== panel.screenName)
+            return false
+          return true
+        }
+        z: 21
+        width: Math.min(360, Math.max(280, panel.width - 48))
+        height: trustCol.implicitHeight + 24
+        radius: 8
+        color: Color.popups.background
+        border.width: 1
+        border.color: Color.popups.border
+        anchors.centerIn: parent
+
+        MouseArea {
+          anchors.fill: parent
+          onClicked: {}
+        }
+
+        Column {
+          id: trustCol
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.top: parent.top
+          anchors.margins: 12
+          spacing: 10
+
+          Text {
+            width: parent.width
+            text: "Untrusted launcher"
+            textFormat: Text.PlainText
+            color: Color.popups.text
+            font.pixelSize: 15
+            font.bold: true
+            font.family: Style.fontFamily
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            width: parent.width
+            text: {
+              var item = host.pendingTrust
+              var label = item ? (item.id || item.name || "this shortcut") : "this shortcut"
+              return "\"" + host.plainText(label, 80) + "\" is not marked as trusted. Opening it will run commands from the file."
+            }
+            textFormat: Text.PlainText
+            color: Color.popups.text
+            font.pixelSize: 13
+            font.family: Style.fontFamily
+            wrapMode: Text.WordWrap
+          }
+
+          Row {
+            anchors.right: parent.right
+            spacing: 8
+
+            Rectangle {
+              width: cancelLabel.implicitWidth + 20
+              height: 28
+              radius: 4
+              color: cancelMouse.containsMouse ? Util.alpha(Color.popups.text, 0.12) : "transparent"
+              border.width: 1
+              border.color: Color.popups.border
+
+              Text {
+                id: cancelLabel
+                anchors.centerIn: parent
+                text: "Cancel"
+                textFormat: Text.PlainText
+                color: Color.popups.text
+                font.pixelSize: 13
+                font.family: Style.fontFamily
+              }
+
+              MouseArea {
+                id: cancelMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                onClicked: host.clearTrustPrompt()
+              }
+            }
+
+            Rectangle {
+              width: trustLabel.implicitWidth + 20
+              height: 28
+              radius: 4
+              color: trustMouse.containsMouse ? Util.alpha(Color.popups.text, 0.12) : Qt.rgba(1, 1, 1, 0.08)
+              border.width: 1
+              border.color: Color.popups.border
+
+              Text {
+                id: trustLabel
+                anchors.centerIn: parent
+                text: "Trust and Open"
+                textFormat: Text.PlainText
+                color: Color.popups.text
+                font.pixelSize: 13
+                font.family: Style.fontFamily
+              }
+
+              MouseArea {
+                id: trustMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                onClicked: host.trustAndOpen(host.pendingTrust)
+              }
+            }
+          }
         }
       }
     }

@@ -17,6 +17,9 @@ Windows-style files and shortcuts on the Omarchy wallpaper.
 - Drag an icon onto Trash, or drop files from Files onto Trash, to delete them
 - Drag files from Files onto the wallpaper to copy them there
 - Click empty wallpaper five times to switch the background (`Super+Ctrl+Space` still works)
+- Untrusted `.desktop` launchers show a warning badge and ask before they run
+
+`.desktop` launchers only run if they are trusted: they came from Applications, the file is marked executable, or you allow launching from the desktop (same model as GNOME). Names and icons from launchers are treated as plain text and local theme or raster image files only. Remote URLs, inline resources, SVG/GIF icon loading, and unbounded Desktop folders are rejected.
 
 ## Install
 
@@ -79,12 +82,15 @@ o.window("org.omarchy.add-to-desktop", { float = true, center = true })
 
 | Action | How |
 | --- | --- |
-| Open | Click an icon |
+| Open | Click an icon (untrusted launchers ask first) |
+| Allow a launcher | Click **Trust and Open**, or right-click **Allow launching** |
 | Move an icon | Drag it; it snaps to the grid |
 | Put a file on the desktop | Drag it onto the wallpaper, or copy it into `~/Desktop` |
 | Pin a shortcut | Right-click wallpaper → Pin application… / New Shortcut… |
 | Trash | Right-click an icon → Move to Trash, press Delete, or drag onto Trash |
 | Change wallpaper | Click empty wallpaper five times, or `Super+Ctrl+Space` |
+
+Pinned applications, New Shortcut, and **Send to Desktop** mark launchers as trusted. A `.desktop` file that merely appears in `~/Desktop` without the executable bit does not.
 
 ## Update
 
