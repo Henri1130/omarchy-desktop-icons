@@ -83,6 +83,7 @@ o.window("org.omarchy.add-to-desktop", { float = true, center = true })
 | Action | How |
 | --- | --- |
 | Open | Click an icon (untrusted launchers ask first) |
+| Select / keyboard | Click the wallpaper, then `Tab` / arrows to move; `Enter` opens, `Delete` trashes, `Esc` cancels |
 | Allow a launcher | Click **Trust and Open**, or right-click **Allow launching** |
 | Move an icon | Drag it; it snaps to the grid |
 | Put a file on the desktop | Drag it onto the wallpaper, or copy it into `~/Desktop` |
@@ -115,3 +116,28 @@ omarchy plugin remove henri.desktop-icons
 ```bash
 omarchy plugin validate .
 ```
+
+## Improvements
+
+These changes keep the plugin's security model intact (remote/SVG icons
+rejected, trust required, sizes bounded, no shell-out of Exec) while
+improving responsiveness, ordering, and accessibility:
+
+- **Instant refresh:** the Desktop folder is watched via a `FileView`
+  (`watchChanges`), so icons appear, move, or get deleted instantly when the
+  watch fires. A 1.5 s poll backs it up, so add/delete always applies within
+  ~1.5 s even if the watch misses an event.
+- **Keyboard navigation:** `Tab` / `Shift+Tab` / arrow keys move the
+  selection in visual grid order (top-to-bottom, left-to-right); `Enter`
+  opens, `Delete` trashes, `Esc` cancels.
+- **New items at the bottom, no overlap:** added shortcuts or folders are
+  placed in the bottom-most free grid cell (just past the last icon),
+  skipping any cell already occupied by a manually dragged icon. Existing
+  icons keep their positions, and dragging an icon is never disturbed.
+- **Trust prompt by the icon:** the "Untrusted launcher" dialog now opens
+  next to the icon instead of screen-centered.
+- **Cleaner code:** `desktop_dir()`, `guess_icon()`, and `unique_dest()`
+  were extracted into `bin/common.py` and imported by both `desktop-index`
+  and `add-to-desktop`.
+- **Correct paths:** `place_one` returns the real created path (capturing
+  the helper's stdout), and `add-to-desktop` prints the created path.

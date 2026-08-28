@@ -14,6 +14,12 @@ import gi
 gi.require_version("Gio", "2.0")
 from gi.repository import Gio, GLib
 
+_BIN_DIR = str(Path(__file__).resolve().parent)
+if _BIN_DIR not in sys.path:
+    sys.path.insert(0, _BIN_DIR)
+
+from common import desktop_dir, guess_icon, unique_dest
+
 INVALID_FILENAME = r'/\0<>:"\\|?*'
 
 
@@ -35,36 +41,12 @@ def notify(title: str, message: str, error: bool = False) -> None:
         print(f"{title}: {message}", file=sys.stderr)
 
 
-def desktop_dir() -> Path:
-    special = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DESKTOP)
-    path = Path(special) if special else Path.home() / "Desktop"
-    if path.resolve() == Path.home().resolve():
-        path = Path.home() / "Desktop"
-    path.mkdir(parents=True, exist_ok=True)
-    return path.resolve()
-
-
 def sanitize_name(name: str) -> str:
     name = name.strip().strip(".")
     for ch in INVALID_FILENAME:
         name = name.replace(ch, " ")
     name = " ".join(name.split())
     return name or "Shortcut"
-
-
-def unique_dest(directory: Path, name: str) -> Path:
-    candidate = directory / name
-    if not candidate.exists():
-        return candidate
-    stem = Path(name).stem
-    suffix = Path(name).suffix
-    base = stem if suffix else name
-    index = 2
-    while True:
-        candidate = directory / f"{base} {index}{suffix}"
-        if not candidate.exists():
-            return candidate
-        index += 1
 
 
 def unique_path(directory: Path, name: str, suffix: str) -> Path:
@@ -76,14 +58,6 @@ def unique_path(directory: Path, name: str, suffix: str) -> Path:
 
 def file_uri(path: Path) -> str:
     return path.resolve().as_uri()
-
-
-def guess_icon(path: Path) -> str:
-    if path.is_dir():
-        return "folder"
-    content_type, _uncertain = Gio.content_type_guess(str(path), None)
-    icon = Gio.content_type_get_generic_icon_name(content_type) if content_type else None
-    return icon or "text-x-generic"
 
 
 def trust_desktop_file(path: Path) -> None:
@@ -256,6 +230,8 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as error:
             errors.append(str(error))
 
+    for p in created:
+        print(p)
     if created:
         noun = "file" if copy else "shortcut"
         if len(created) == 1:

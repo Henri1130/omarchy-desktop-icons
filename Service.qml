@@ -169,6 +169,51 @@ Item {
       listProc.running = true
   }
 
+  function visualOrder(screenName) {
+    var items = root.items
+    if (!items || items.length === 0)
+      return []
+    var ps = screenName ? root.positions[screenName] : null
+    if (!ps) {
+      for (var k in root.positions) {
+        ps = root.positions[k]
+        break
+      }
+    }
+    var arr = items.slice()
+    arr.sort(function(a, b) {
+      var pa = ps ? ps[a.id] : null
+      var pb = ps ? ps[b.id] : null
+      var ya = pa ? pa.y : 1e9, xa = pa ? pa.x : 1e9
+      var yb = pb ? pb.y : 1e9, xb = pb ? pb.x : 1e9
+      if (ya !== yb)
+        return ya - yb
+      return xa - xb
+    })
+    return arr
+  }
+
+  function moveSelection(delta, screenName) {
+    var order = root.visualOrder(screenName)
+    if (order.length === 0)
+      return
+    var idx = -1
+    for (var i = 0; i < order.length; i++) {
+      if (order[i].id === root.selectedId) {
+        idx = i
+        break
+      }
+    }
+    if (idx === -1)
+      idx = 0
+    else {
+      idx = (idx + delta) % order.length
+      if (idx < 0)
+        idx += order.length
+    }
+    root.selectedId = order[idx].id
+  }
+
   function openItem(item) {
     if (!item || !item.path) return
     Quickshell.execDetached(["/usr/bin/python3", root.indexScript, "--open", item.path])
@@ -358,8 +403,22 @@ Item {
     onFileChanged: reload()
   }
 
+  // Watch the Desktop folder itself so icons appear, move, or get deleted
+  // immediately instead of waiting for the fallback poll below.
+  FileView {
+    id: desktopWatch
+    path: root.desktopPath
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.refresh()
+    onFileChanged: root.refresh()
+    onLoadFailed: root.refresh()
+  }
+
+  // Safety-net poll. The directory watch above handles the common case
+  // instantly; this keeps add/delete responsive if the watch ever misses.
   Timer {
-    interval: 1200
+    interval: 1500
     running: true
     repeat: true
     onTriggered: root.refresh()
@@ -402,6 +461,8 @@ Item {
       property real menuY: 0
       property bool dropping: false
       property int emptyClicks: 0
+      property bool _initialized: false
+      property var _knownIds: ({})
 
       function layoutPos(index) {
         var availH = Math.max(host.cellH, panel.height - panel.padTop - host.padBottom)
@@ -442,6 +503,116 @@ Item {
             return item
         }
         return null
+      }
+
+      function trustIconPos() {
+        var item = host.pendingTrust
+        if (!item)
+          return null
+        for (var i = 0; i < host.items.length; i++) {
+          if (host.items[i].id === item.id)
+            return panel.posFor(host.items[i], i)
+        }
+        return null
+      }
+
+      // Place newly added icons at the bottom-most free grid cell (just past
+      // the last occupied icon), skipping any cell already taken. This keeps
+      // them out of the way of manually dragged icons while still landing at
+      // the bottom of the list when the grid is tidy. Existing icons keep
+      // their positions; stale positions for removed items are cleaned up.
+      // Triggered only on add/remove, never on a drag or a routine refresh.
+      function assignMissing() {
+        var cur = {}
+        for (var i = 0; i < host.items.length; i++)
+          cur[host.items[i].id] = true
+        var next = JSON.parse(JSON.stringify(host.positions || {}))
+        if (!next[panel.screenName])
+          next[panel.screenName] = {}
+        var byScreen = next[panel.screenName]
+        var dirty = false
+        for (var id in byScreen) {
+          if (!cur[id]) {
+            delete byScreen[id]
+            dirty = true
+          }
+        }
+
+        var availH = Math.max(host.cellH, panel.height - panel.padTop - host.padBottom)
+        var rows = Math.max(1, Math.floor(availH / host.cellH))
+        function cellKey(p) {
+          var col = Math.round((p.x - panel.padLeft) / host.cellW)
+          var row = Math.round((p.y - panel.padTop) / host.cellH)
+          if (col < 0) col = 0
+          if (row < 0) row = 0
+          return col + "," + row
+        }
+        var occupied = {}
+        for (var id2 in byScreen)
+          occupied[cellKey(byScreen[id2])] = true
+        function firstFree(start) {
+          var idx = start
+          var guard = 0
+          var max = Math.max(host.maxItems * 4, rows * 16)
+          while (guard < max) {
+            var col = Math.floor(idx / rows)
+            var row = idx % rows
+            if (!occupied[col + "," + row])
+              return idx
+            idx++
+            guard++
+          }
+          return start
+        }
+        var lastIdx = -1
+        for (var id3 in byScreen) {
+          var parts = cellKey(byScreen[id3]).split(",")
+          var idx = parseInt(parts[0], 10) * rows + parseInt(parts[1], 10)
+          if (idx > lastIdx)
+            lastIdx = idx
+        }
+        var nextIdx = firstFree(lastIdx + 1)
+        for (var i = 0; i < host.items.length; i++) {
+          var item = host.items[i]
+          if (!byScreen[item.id]) {
+            var pp = panel.layoutPos(nextIdx)
+            var pos = { x: Math.round(pp.x), y: Math.round(pp.y) }
+            byScreen[item.id] = pos
+            occupied[cellKey(pos)] = true
+            nextIdx = firstFree(nextIdx + 1)
+            dirty = true
+          }
+        }
+        if (!dirty)
+          return
+        host.positions = next
+        host.savePositions()
+      }
+
+      // Detect add/remove (item id set change) and place only new icons.
+      // First load still assigns missing positions so unsaved items do not
+      // land on top of dragged ones; existing saved positions stay put.
+      function maybeRepack() {
+        var cur = {}
+        for (var i = 0; i < host.items.length; i++)
+          cur[host.items[i].id] = true
+        if (!panel._initialized) {
+          panel._knownIds = cur
+          panel._initialized = true
+          if (panel.width > host.cellW && panel.height > host.cellH)
+            panel.assignMissing()
+          return
+        }
+        var changed = false
+        for (var id in cur)
+          if (!panel._knownIds[id])
+            changed = true
+        for (var id in panel._knownIds)
+          if (!cur[id])
+            changed = true
+        panel._knownIds = cur
+        if (changed)
+          panel.assignMissing()
       }
 
       function closeMenu() {
@@ -531,6 +702,18 @@ Item {
                 break
               }
             }
+            event.accepted = true
+          } else if (event.key === Qt.Key_Tab) {
+            host.moveSelection(event.modifiers & Qt.ShiftModifier ? -1 : 1, panel.screenName)
+            event.accepted = true
+          } else if (event.key === Qt.Key_Backtab) {
+            host.moveSelection(-1, panel.screenName)
+            event.accepted = true
+          } else if (event.key === Qt.Key_Left || event.key === Qt.Key_Up) {
+            host.moveSelection(-1, panel.screenName)
+            event.accepted = true
+          } else if (event.key === Qt.Key_Right || event.key === Qt.Key_Down) {
+            host.moveSelection(1, panel.screenName)
             event.accepted = true
           }
         }
@@ -870,6 +1053,13 @@ Item {
         }
       }
 
+      Connections {
+        target: host
+        function onItemsChanged() {
+          panel.maybeRepack()
+        }
+      }
+
       Rectangle {
         id: trustBox
         visible: {
@@ -887,7 +1077,22 @@ Item {
         color: Color.popups.background
         border.width: 1
         border.color: Color.popups.border
-        anchors.centerIn: parent
+        x: {
+          var p = panel.trustIconPos()
+          if (!p)
+            return Math.max(8, Math.round(panel.width / 2 - width / 2))
+          return Math.min(Math.max(8, Math.round(p.x + host.cellW / 2 - width / 2)),
+                          Math.max(8, panel.width - width - 8))
+        }
+        y: {
+          var p = panel.trustIconPos()
+          if (!p)
+            return Math.max(8, Math.round(panel.height / 2 - height / 2))
+          var above = p.y - height - 8
+          if (above >= 8)
+            return above
+          return p.y + host.cellH + 8
+        }
 
         MouseArea {
           anchors.fill: parent

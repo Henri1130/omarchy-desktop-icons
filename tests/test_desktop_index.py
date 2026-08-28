@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +15,9 @@ HELPER = ROOT / "bin" / "desktop-index"
 
 
 def load_helper():
+    bin_dir = str(ROOT / "bin")
+    if bin_dir not in sys.path:
+        sys.path.insert(0, bin_dir)
     loader = importlib.machinery.SourceFileLoader("desktop_index", str(HELPER))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     module = importlib.util.module_from_spec(spec)
@@ -199,6 +203,14 @@ class DesktopIndexSecurityTests(unittest.TestCase):
         svg_item = self.listed("drawing.svg")
         self.assertEqual(svg_item["preview"], "")
         self.assertEqual(svg_item["kind"], "image")
+
+    def test_unique_dest_appends_numeric_suffix(self):
+        (self.desktop / "Notes.txt").write_text("x", encoding="utf-8")
+        dest = self.mod.unique_dest(self.desktop, "Notes.txt")
+        self.assertEqual(dest.name, "Notes 2.txt")
+        dest.write_text("y", encoding="utf-8")
+        dest3 = self.mod.unique_dest(self.desktop, "Notes.txt")
+        self.assertEqual(dest3.name, "Notes 3.txt")
 
     def test_place_does_not_auto_trust_copied_desktop_file(self):
         source_dir = Path(self._tmp.name) / "incoming"
