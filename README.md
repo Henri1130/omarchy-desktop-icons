@@ -19,7 +19,7 @@ Windows-style files and shortcuts on the Omarchy wallpaper.
 - Click empty wallpaper five times to switch the background (`Super+Ctrl+Space` still works)
 - Untrusted `.desktop` launchers show a warning badge and ask before they run
 
-`.desktop` launchers only run if they are trusted: they came from Applications, the file is marked executable, or you allow launching from the desktop (same model as GNOME). Names and icons from launchers are treated as plain text and local theme or raster image files only. Remote URLs, inline resources, SVG/GIF icon loading, and unbounded Desktop folders are rejected.
+`.desktop` launchers only run if they are trusted: they came from a real Applications directory (`/usr/share/applications`, `~/.local/share/applications`, and other XDG application dirs), the file is marked executable, or you allow launching from the desktop (same model as GNOME). A folder merely named `applications` is not enough. Names and icons from launchers are treated as plain text and local theme or raster image files only. Remote URLs, inline resources, SVG/GIF icon loading, and unbounded Desktop folders are rejected.
 
 ## Install
 
@@ -91,7 +91,7 @@ o.window("org.omarchy.add-to-desktop", { float = true, center = true })
 | Trash | Right-click an icon → Move to Trash, press Delete, or drag onto Trash |
 | Change wallpaper | Click empty wallpaper five times, or `Super+Ctrl+Space` |
 
-Pinned applications, New Shortcut, and **Send to Desktop** mark launchers as trusted. A `.desktop` file that merely appears in `~/Desktop` without the executable bit does not.
+**Pin application** from Applications marks launchers as trusted. **Send to Desktop** and copies of a `.desktop` file only auto-trust when the source is under a real Applications directory. A `.desktop` file that merely appears in `~/Desktop` without the executable bit does not.
 
 ## Update
 
@@ -115,6 +115,7 @@ omarchy plugin remove henri.desktop-icons
 
 ```bash
 omarchy plugin validate .
+python3 tests/test_desktop_index.py
 ```
 
 ## Improvements
@@ -141,3 +142,6 @@ improving responsiveness, ordering, and accessibility:
   and `add-to-desktop`.
 - **Correct paths:** `place_one` returns the real created path (capturing
   the helper's stdout), and `add-to-desktop` prints the created path.
+- **Trust from real Applications dirs only:** pinning or copying a
+  `.desktop` file no longer auto-trusts just because a parent folder is
+  named `applications` (for example `~/Downloads/applications`).

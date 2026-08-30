@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import gi
 
 gi.require_version("Gio", "2.0")
 from gi.repository import Gio, GLib
-from pathlib import Path
 
 
 def desktop_dir() -> Path:
@@ -44,3 +46,46 @@ def guess_icon(path: Path) -> str:
     content_type, _uncertain = Gio.content_type_guess(str(path), None)
     icon = Gio.content_type_get_generic_icon_name(content_type) if content_type else None
     return icon or "text-x-generic"
+
+
+def is_under(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def trusted_application_dirs() -> list[Path]:
+    dirs: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        try:
+            resolved = path.expanduser().resolve()
+        except OSError:
+            return
+        key = str(resolved)
+        if key in seen:
+            return
+        seen.add(key)
+        dirs.append(resolved)
+
+    add(Path("/usr/share/applications"))
+    add(Path("/usr/local/share/applications"))
+    add(Path.home() / ".local/share/applications")
+    for raw in os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":"):
+        if raw.strip():
+            add(Path(raw) / "applications")
+    data_home = os.environ.get("XDG_DATA_HOME")
+    if data_home:
+        add(Path(data_home) / "applications")
+    return dirs
+
+
+def is_trusted_application_source(path: Path) -> bool:
+    try:
+        resolved = path.expanduser().resolve()
+    except OSError:
+        return False
+    return any(is_under(resolved, directory) for directory in trusted_application_dirs())

@@ -18,7 +18,12 @@ _BIN_DIR = str(Path(__file__).resolve().parent)
 if _BIN_DIR not in sys.path:
     sys.path.insert(0, _BIN_DIR)
 
-from common import desktop_dir, guess_icon, unique_dest
+from common import (
+    desktop_dir,
+    guess_icon,
+    is_trusted_application_source,
+    unique_dest,
+)
 
 INVALID_FILENAME = r'/\0<>:"\\|?*'
 
@@ -109,7 +114,8 @@ def add_shortcut(source: Path, desktop: Path) -> Path:
         name = read_desktop_name(source) or source.stem
         dest = unique_path(desktop, name, ".desktop")
         shutil.copy2(source, dest)
-        trust_desktop_file(dest)
+        if is_trusted_application_source(source):
+            trust_desktop_file(dest)
         return dest
 
     if suffix == ".url":
@@ -136,7 +142,7 @@ def copy_one(source: Path, desktop: Path) -> Path:
         shutil.copytree(source, dest)
     else:
         shutil.copy2(source, dest)
-        if dest.suffix.lower() == ".desktop":
+        if dest.suffix.lower() == ".desktop" and is_trusted_application_source(source):
             trust_desktop_file(dest)
     return dest
 

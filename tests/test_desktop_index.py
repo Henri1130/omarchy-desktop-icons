@@ -12,17 +12,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "bin" / "desktop-index"
+ADD_HELPER = ROOT / "bin" / "add-to-desktop"
 
 
-def load_helper():
+def load_script(name, path):
     bin_dir = str(ROOT / "bin")
     if bin_dir not in sys.path:
         sys.path.insert(0, bin_dir)
-    loader = importlib.machinery.SourceFileLoader("desktop_index", str(HELPER))
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     return module
+
+
+def load_helper():
+    return load_script("desktop_index", HELPER)
 
 
 class DesktopIndexSecurityTests(unittest.TestCase):
@@ -226,6 +231,19 @@ class DesktopIndexSecurityTests(unittest.TestCase):
         self.assertFalse(mode & stat.S_IXUSR)
         self.assertFalse(self.mod.is_trusted_desktop(dest))
 
+    def test_place_does_not_auto_trust_applications_substring(self):
+        source_dir = Path(self._tmp.name) / "Downloads" / "applications"
+        source_dir.mkdir(parents=True)
+        source = source_dir / "evil.desktop"
+        source.write_text(
+            "[Desktop Entry]\nType=Application\nName=Evil\nExec=/usr/bin/true\n",
+            encoding="utf-8",
+        )
+        dest = self.mod.place_one(source, self.desktop, "copy")
+        self.assertTrue(dest.exists())
+        self.assertFalse(dest.stat().st_mode & stat.S_IXUSR)
+        self.assertFalse(self.mod.is_trusted_desktop(dest))
+
     def test_symlink_launcher_is_not_trusted_unless_in_applications(self):
         target = Path(self._tmp.name) / "real.desktop"
         target.write_text(
@@ -252,6 +270,47 @@ class DesktopIndexSecurityTests(unittest.TestCase):
         pinned = self.desktop / "firefox.desktop"
         os.symlink(system, pinned)
         self.assertTrue(self.mod.is_trusted_desktop(pinned))
+
+
+class AddToDesktopTrustTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = load_script("add_to_desktop", ADD_HELPER)
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.desktop = Path(self._tmp.name) / "Desktop"
+        self.desktop.mkdir()
+        self.mod.desktop_dir = lambda: self.desktop
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_pinning_a_download_desktop_file_stays_untrusted(self):
+        source_dir = Path(self._tmp.name) / "Downloads" / "applications"
+        source_dir.mkdir(parents=True)
+        source = source_dir / "evil.desktop"
+        source.write_text(
+            "[Desktop Entry]\nType=Application\nName=Evil\nExec=/usr/bin/true\n",
+            encoding="utf-8",
+        )
+        dest = self.mod.add_shortcut(source, self.desktop)
+        self.assertTrue(dest.exists())
+        self.assertFalse(dest.stat().st_mode & stat.S_IXUSR)
+
+    def test_pinning_from_applications_dir_is_trusted(self):
+        apps = Path(self._tmp.name) / "applications"
+        apps.mkdir()
+        source = apps / "firefox.desktop"
+        source.write_text(
+            "[Desktop Entry]\nType=Application\nName=Firefox\nExec=/usr/bin/true\n",
+            encoding="utf-8",
+        )
+        original = self.mod.is_trusted_application_source
+        self.mod.is_trusted_application_source = lambda path: path.resolve() == source.resolve()
+        self.addCleanup(lambda: setattr(self.mod, "is_trusted_application_source", original))
+        dest = self.mod.add_shortcut(source, self.desktop)
+        self.assertTrue(dest.stat().st_mode & stat.S_IXUSR)
 
 
 class QmlSecurityTests(unittest.TestCase):
