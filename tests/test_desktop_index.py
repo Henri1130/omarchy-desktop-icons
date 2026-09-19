@@ -244,6 +244,123 @@ class DesktopIndexSecurityTests(unittest.TestCase):
         self.assertFalse(dest.stat().st_mode & stat.S_IXUSR)
         self.assertFalse(self.mod.is_trusted_desktop(dest))
 
+    def test_rename_folder(self):
+        folder = self.desktop / "New Folder"
+        folder.mkdir()
+        dest = self.mod.rename_item(folder, "Projects")
+        self.assertEqual(dest, self.desktop / "Projects")
+        self.assertTrue(dest.is_dir())
+        self.assertFalse(folder.exists())
+
+    def test_rename_rejects_path_escape_and_outside_desktop(self):
+        folder = self.desktop / "Keep"
+        folder.mkdir()
+        with self.assertRaises(ValueError):
+            self.mod.rename_item(folder, "../evil")
+        with self.assertRaises(ValueError):
+            self.mod.rename_item(folder, "a/b")
+        self.assertTrue(folder.exists())
+        outside = Path(self._tmp.name) / "outside"
+        outside.mkdir()
+        with self.assertRaises(ValueError):
+            self.mod.rename_item(outside, "nope")
+
+    def test_rename_rejects_existing_and_trash(self):
+        (self.desktop / "A").mkdir()
+        (self.desktop / "B").mkdir()
+        with self.assertRaises(ValueError):
+            self.mod.rename_item(self.desktop / "A", "B")
+        trash = self.write_desktop(
+            "trash-can.desktop",
+            "[Desktop Entry]\nType=Link\nName=Trash\nURL=trash:///\nIcon=user-trash\n",
+        )
+        with self.assertRaises(ValueError):
+            self.mod.rename_item(trash, "Nope")
+        self.assertTrue(trash.exists())
+
+    def test_rename_url_keeps_suffix(self):
+        path = self.desktop / "old.url"
+        path.write_text("[InternetShortcut]\nURL=https://example.com\n", encoding="utf-8")
+        dest = self.mod.rename_item(path, "Example")
+        self.assertEqual(dest.name, "Example.url")
+        self.assertFalse(path.exists())
+
+    def test_rename_desktop_updates_visible_name(self):
+        path = self.write_desktop(
+            "app.desktop",
+            "[Desktop Entry]\nType=Application\nName=App\nExec=/usr/bin/true\n",
+        )
+        dest = self.mod.rename_item(path, "My App")
+        self.assertEqual(dest.name, "My App.desktop")
+        item = self.listed("My App.desktop")
+        self.assertEqual(item["name"], "My App")
+
+    def test_rename_cli_writes_new_id(self):
+        folder = self.desktop / "Old"
+        folder.mkdir()
+        original = self.mod.desktop_dir
+        self.mod.desktop_dir = lambda: self.desktop
+        self.addCleanup(lambda: setattr(self.mod, "desktop_dir", original))
+        from io import StringIO
+        from unittest.mock import patch
+        with patch("sys.stdout", new=StringIO()) as out:
+            code = self.mod.main(["--rename", str(folder), "--to", "New"])
+        self.assertEqual(code, 0)
+        self.assertTrue((self.desktop / "New").is_dir())
+        self.assertIn('"id":"New"', out.getvalue().replace(" ", ""))
+
+    def test_rename_symlink_via_cli_does_not_follow(self):
+        target = Path(self._tmp.name) / "elsewhere"
+        target.mkdir()
+        link = self.desktop / "Link"
+        os.symlink(target, link)
+        from io import StringIO
+        from unittest.mock import patch
+        with patch("sys.stdout", new=StringIO()), patch("sys.stderr", new=StringIO()):
+            code = self.mod.main(["--rename", str(link), "--to", "RenamedLink"])
+        self.assertEqual(code, 0)
+        dest = self.desktop / "RenamedLink"
+        self.assertTrue(dest.is_symlink())
+        self.assertTrue(target.exists())
+        self.assertFalse(os.path.lexists(link))
+
+    def test_rename_symlink_stays_on_desktop(self):
+        target = Path(self._tmp.name) / "elsewhere"
+        target.mkdir()
+        marker = target / "keep.txt"
+        marker.write_text("ok", encoding="utf-8")
+        link = self.desktop / "Link"
+        os.symlink(target, link)
+        dest = self.mod.rename_item(link, "RenamedLink")
+        self.assertEqual(dest.name, "RenamedLink")
+        self.assertTrue(dest.is_symlink())
+        self.assertFalse(link.exists())
+        self.assertTrue(marker.exists())
+
+    def test_rename_caps_suffix_length(self):
+        path = self.desktop / "old.url"
+        path.write_text("[InternetShortcut]\nURL=https://example.com\n", encoding="utf-8")
+        dest = self.mod.rename_item(path, "x" * 300)
+        self.assertTrue(dest.name.endswith(".url"))
+        self.assertLessEqual(len(dest.name), self.mod.MAX_ID_LENGTH)
+
+    def test_trash_symlink_does_not_delete_target(self):
+        target = Path(self._tmp.name) / "real-folder"
+        target.mkdir()
+        marker = target / "keep.txt"
+        marker.write_text("ok", encoding="utf-8")
+        link = self.desktop / "Alias"
+        os.symlink(target, link)
+        try:
+            self.mod.trash_one(link)
+        except RuntimeError as err:
+            if "not supported" in str(err).lower():
+                self.skipTest(str(err))
+            raise
+        self.assertTrue(marker.exists())
+        self.assertTrue(target.is_dir())
+        self.assertFalse(os.path.lexists(link))
+
     def test_symlink_launcher_is_not_trusted_unless_in_applications(self):
         target = Path(self._tmp.name) / "real.desktop"
         target.write_text(
@@ -331,6 +448,9 @@ class QmlSecurityTests(unittest.TestCase):
         self.assertIn("function isLocalFileUrl(", source)
         self.assertIn("textFormat: Text.PlainText", source)
         self.assertIn("--trust-and-open", source)
+        self.assertIn("--rename", source)
+        self.assertIn('action: "rename"', source)
+        self.assertIn("bin/create-hyperlink", source)
 
 
 if __name__ == "__main__":

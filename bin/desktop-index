@@ -369,12 +369,16 @@ def list_items() -> dict:
     return payload
 
 
-def path_from_uri(value: str) -> Path:
+def path_from_uri(value: str, *, resolve: bool = True) -> Path:
     text = value.strip().strip("<>")
     if text.startswith("file://"):
         parsed = urlparse(text)
-        return Path(unquote(parsed.path))
-    return Path(os.path.expanduser(text)).resolve()
+        path = Path(unquote(parsed.path))
+    else:
+        path = Path(os.path.expanduser(text))
+    if resolve:
+        return path.resolve()
+    return path
 
 
 def open_trash() -> None:
@@ -386,18 +390,119 @@ def open_trash() -> None:
 
 
 def trash_one(path: Path) -> None:
-    path = path.expanduser()
+    path = Path(path).expanduser()
     if path.as_uri().startswith("trash:"):
         return
-    if not path.exists():
+    if not path.exists() and not path.is_symlink():
         raise FileNotFoundError(f"Path not found: {path}")
     if path.suffix.lower() == ".desktop" and is_trash_launcher(read_desktop_entry(path)):
         return
-    gfile = Gio.File.new_for_path(str(path.resolve()))
+    gfile = Gio.File.new_for_path(str(path))
     try:
         gfile.trash(None)
     except GLib.Error as error:
         raise RuntimeError(f"Could not move to Trash: {error.message}") from error
+
+
+def notify(title: str, message: str, error: bool = False) -> None:
+    try:
+        Gio.Subprocess.new(
+            [
+                "notify-send",
+                "-u",
+                "normal" if error else "low",
+                "-i",
+                "dialog-error" if error else "user-desktop",
+                title,
+                message,
+            ],
+            Gio.SubprocessFlags.NONE,
+        )
+    except Exception:
+        print(f"{title}: {message}", file=sys.stderr)
+
+
+def sanitize_rename_name(name: str, extra_suffix: str = "") -> str:
+    name = str(name or "").replace("\x00", "").strip().strip(".")
+    if "/" in name or "\\" in name:
+        raise ValueError("Invalid name")
+    for ch in '<>:"|?*':
+        name = name.replace(ch, " ")
+    name = " ".join(name.split())
+    if not name or name in {".", ".."}:
+        raise ValueError("Enter a name")
+    limit = MAX_ID_LENGTH - len(extra_suffix)
+    if limit < 1:
+        raise ValueError("Enter a name")
+    if len(name) > limit:
+        name = name[:limit].rstrip()
+    if not name or name in {".", ".."}:
+        raise ValueError("Enter a name")
+    return name + extra_suffix
+
+
+def _desktop_entry_path(path: Path) -> Path:
+    desktop = desktop_dir()
+    path = Path(path).expanduser()
+    if not path.is_absolute():
+        path = desktop / path.name
+    try:
+        parent = path.parent.resolve()
+        desktop_resolved = desktop.resolve()
+    except OSError as error:
+        raise ValueError("Can only rename items on the Desktop") from error
+    if parent != desktop_resolved:
+        raise ValueError("Can only rename items on the Desktop")
+    return parent / path.name
+
+
+def update_desktop_entry_name(path: Path, name: str) -> None:
+    try:
+        keyfile = GLib.KeyFile()
+        keyfile.load_from_file(
+            str(path),
+            GLib.KeyFileFlags.KEEP_COMMENTS | GLib.KeyFileFlags.KEEP_TRANSLATIONS,
+        )
+        keyfile.set_string("Desktop Entry", "Name", name)
+        keyfile.save_to_file(str(path))
+    except GLib.Error:
+        return
+
+
+def rename_item(path: Path, new_name: str) -> Path:
+    path = _desktop_entry_path(path)
+    if not path.exists() and not path.is_symlink():
+        raise FileNotFoundError(f"Path not found: {path.name}")
+    if path.suffix.lower() == ".desktop" and is_trash_launcher(read_desktop_entry(path)):
+        raise ValueError("Cannot rename Trash")
+
+    name = sanitize_rename_name(new_name)
+    suffix = path.suffix
+    if suffix.lower() in {".url", ".desktop"} and not name.lower().endswith(suffix.lower()):
+        name = sanitize_rename_name(name, extra_suffix=suffix)
+
+    dest = path.with_name(name)
+    try:
+        dest_parent = dest.parent.resolve()
+        path_parent = path.parent.resolve()
+    except OSError as error:
+        raise ValueError("Invalid name") from error
+    if dest_parent != path_parent or dest.name != name:
+        raise ValueError("Invalid name")
+
+    if dest.exists() or dest.is_symlink():
+        try:
+            same = os.path.samestat(dest.lstat(), path.lstat())
+        except OSError:
+            same = False
+        if not same:
+            raise ValueError(f"Already exists: {dest.name}")
+        return path
+
+    path.rename(dest)
+    if dest.suffix.lower() == ".desktop" and dest.is_file() and not dest.is_symlink():
+        update_desktop_entry_name(dest, dest.stem)
+    return dest
 
 
 def sanitize_link_url(url: str) -> str:
@@ -420,9 +525,20 @@ def open_path(path: Path, *, require_trust: bool = True) -> None:
 
     suffix = path.suffix.lower()
     if suffix == ".url":
-        helper = shutil.which("create-hyperlink") or str(
-            Path.home() / ".local/bin/create-hyperlink"
+        helper = next(
+            (
+                candidate
+                for candidate in (
+                    str(Path(__file__).resolve().parent / "create-hyperlink"),
+                    shutil.which("create-hyperlink"),
+                    str(Path.home() / ".local/bin/create-hyperlink"),
+                )
+                if candidate and os.path.isfile(candidate)
+            ),
+            "",
         )
+        if not helper:
+            raise FileNotFoundError("create-hyperlink is not installed")
         Gio.Subprocess.new([helper, "--open", str(path)], Gio.SubprocessFlags.NONE)
         return
 
@@ -530,6 +646,16 @@ def main(argv: list[str] | None = None) -> int:
         default="copy",
         help="How --place should add items (default: copy)",
     )
+    parser.add_argument(
+        "--rename",
+        metavar="PATH",
+        help="Rename a Desktop item",
+    )
+    parser.add_argument(
+        "--to",
+        metavar="NAME",
+        help="New name for --rename",
+    )
     args = parser.parse_args(argv)
 
     if args.trust_and_open:
@@ -558,6 +684,17 @@ def main(argv: list[str] | None = None) -> int:
         desktop = desktop_dir()
         for raw in _bounded_paths(args.place, "--place"):
             place_one(path_from_uri(raw), desktop, args.mode)
+        return 0
+
+    if args.rename:
+        try:
+            dest = rename_item(path_from_uri(args.rename, resolve=False), args.to or "")
+        except Exception as error:
+            notify("Desktop", str(error), error=True)
+            print(str(error), file=sys.stderr)
+            return 1
+        sys.stdout.write(encode_payload({"id": dest.name, "path": str(dest)}))
+        sys.stdout.write("\n")
         return 0
 
     payload = list_items()

@@ -13,7 +13,7 @@ Windows-style files and shortcuts on the Omarchy wallpaper.
 - Shows `~/Desktop` as icons on every monitor, under windows and the bar
 - Click an icon to open it; drag to move it (snaps to a grid)
 - Right-click empty wallpaper: New Folder, New Shortcut, Pin application, Add files
-- Right-click an icon: Open, Show in Files, Move to Trash
+- Right-click an icon: Open, Rename, Show in Files, Move to Trash
 - Drag an icon onto Trash, or drop files from Files onto Trash, to delete them
 - Drag files from Files onto the wallpaper to copy them there
 - Click empty wallpaper five times to switch the background (`Super+Ctrl+Space` still works)
@@ -63,19 +63,22 @@ omarchy restart shell
 
 ### Files context menu (optional)
 
-To add **Send to Desktop (create shortcut)** and **Copy to Desktop** in Files:
+To add **Send to Desktop (create shortcut)**, **Copy to Desktop**, and **Create Hyperlink…** in Files:
 
 ```bash
 mkdir -p ~/.local/share/nautilus-python/extensions
 cp ~/.config/omarchy/plugins/henri.desktop-icons/nautilus/add_to_desktop.py \
   ~/.local/share/nautilus-python/extensions/
+cp ~/.config/omarchy/plugins/henri.desktop-icons/nautilus/create_hyperlink.py \
+  ~/.local/share/nautilus-python/extensions/
 nautilus -q
 ```
 
-Optional: float the pin/add dialogs in `~/.config/hypr/hyprland.lua`:
+Optional: float the pin/add/hyperlink dialogs in `~/.config/hypr/hyprland.lua`:
 
 ```lua
 o.window("org.omarchy.add-to-desktop", { float = true, center = true })
+o.window("org.omarchy.create-hyperlink", { float = true, center = true })
 ```
 
 ## Use
@@ -83,7 +86,8 @@ o.window("org.omarchy.add-to-desktop", { float = true, center = true })
 | Action | How |
 | --- | --- |
 | Open | Click an icon (untrusted launchers ask first) |
-| Select / keyboard | Click the wallpaper, then `Tab` / arrows to move; `Enter` opens, `Delete` trashes, `Esc` cancels |
+| Select / keyboard | Click the wallpaper, then `Tab` / arrows to move; `Enter` opens, `F2` renames, `Delete` trashes, `Esc` cancels |
+| Rename | Right-click an icon → Rename, or select it and press `F2` |
 | Allow a launcher | Click **Trust and Open**, or right-click **Allow launching** |
 | Move an icon | Drag it; it snaps to the grid |
 | Put a file on the desktop | Drag it onto the wallpaper, or copy it into `~/Desktop` |
@@ -145,3 +149,8 @@ improving responsiveness, ordering, and accessibility:
 - **Trust from real Applications dirs only:** pinning or copying a
   `.desktop` file no longer auto-trusts just because a parent folder is
   named `applications` (for example `~/Downloads/applications`).
+- **Rename:** right-click **Rename** or press `F2` to rename folders,
+  files, and shortcuts in place. The icon stays on its grid cell.
+- **New Shortcut:** the hyperlink dialog ships in `bin/create-hyperlink`,
+  so published installs can paste a web address without a separate
+  `~/.local/bin` copy.

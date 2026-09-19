@@ -25,6 +25,9 @@ Item {
   readonly property int maxNameLength: 120
   property var pendingTrust: null
   property string pendingTrustScreen: ""
+  property string renamingId: ""
+  property string renamingScreen: ""
+  property bool renameBusy: false
 
   readonly property string home: Quickshell.env("HOME")
   readonly property string pluginDir: (manifest && manifest.__sourceDir)
@@ -32,7 +35,7 @@ Item {
     : (home + "/.config/omarchy/plugins/henri.desktop-icons")
   readonly property string indexScript: pluginDir + "/bin/desktop-index"
   readonly property string addScript: pluginDir + "/bin/add-to-desktop"
-  readonly property string hyperlinkScript: home + "/.local/bin/create-hyperlink"
+  readonly property string hyperlinkScript: pluginDir + "/bin/create-hyperlink"
   readonly property string positionsPath: home + "/.config/omarchy/desktop-icon-positions.json"
 
   function padTopFor(screen) {
@@ -165,8 +168,70 @@ Item {
   }
 
   function refresh() {
+    if (root.renameBusy)
+      return
     if (!listProc.running)
       listProc.running = true
+  }
+
+  function canRename(item) {
+    return !!(item && item.path && !root.isTrash(item) && !root.renameBusy)
+  }
+
+  function isRenamingItem(item, screenName) {
+    return !!(item && root.renamingId && root.renamingId === item.id
+      && root.renamingScreen === screenName)
+  }
+
+  function beginRename(item, screenName) {
+    if (!root.canRename(item))
+      return
+    root.selectedId = item.id
+    root.renamingScreen = screenName || ""
+    root.renamingId = item.id
+  }
+
+  function cancelRename() {
+    root.renamingId = ""
+    root.renamingScreen = ""
+  }
+
+  function renameItemPos(oldId, newId) {
+    if (!oldId || !newId || oldId === newId)
+      return
+    var next = JSON.parse(JSON.stringify(root.positions || {}))
+    var dirty = false
+    for (var screen in next) {
+      if (!next[screen] || !next[screen][oldId])
+        continue
+      next[screen][newId] = next[screen][oldId]
+      delete next[screen][oldId]
+      dirty = true
+    }
+    if (!dirty)
+      return
+    root.positions = next
+    root.savePositions()
+  }
+
+  function commitRename(item, newName) {
+    root.cancelRename()
+    var name = String(newName || "").replace(/\s+/g, " ").trim()
+    if (!item || !item.path || root.isTrash(item) || !name || root.renameBusy)
+      return
+    if (name === String(item.name || ""))
+      return
+    root.renameBusy = true
+    renameProc.oldId = item.id
+    renameProc.command = [
+      "/usr/bin/python3",
+      root.indexScript,
+      "--rename",
+      item.path,
+      "--to",
+      name
+    ]
+    renameProc.running = true
   }
 
   function visualOrder(screenName) {
@@ -389,6 +454,31 @@ Item {
     command: ["/usr/bin/python3", root.indexScript]
     stdout: StdioCollector {
       onStreamFinished: root.applyList(text)
+    }
+  }
+
+  Process {
+    id: renameProc
+    property string oldId: ""
+    stdout: StdioCollector {
+      id: renameOut
+      waitForEnd: true
+    }
+    onExited: function(exitCode) {
+      if (exitCode === 0) {
+        try {
+          var data = JSON.parse(String(renameOut.text || "").trim())
+          if (renameProc.oldId && data && data.id) {
+            root.renameItemPos(renameProc.oldId, data.id)
+            if (root.selectedId === renameProc.oldId)
+              root.selectedId = data.id
+          }
+        } catch (e) {
+        }
+      }
+      renameProc.oldId = ""
+      root.renameBusy = false
+      Qt.callLater(root.refresh)
     }
   }
 
@@ -642,18 +732,19 @@ Item {
               { action: "open", label: "Open Trash" },
               { action: "files", label: "Show in Files" }
             ]
-          if (host.isUntrustedLauncher(menuItem))
-            return [
-              { action: "trust-open", label: "Trust and Open" },
-              { action: "trust", label: "Allow launching" },
-              { action: "files", label: "Show in Files" },
-              { action: "trash", label: "Move to Trash" }
-            ]
-          return [
-            { action: "open", label: "Open" },
+          var renameAndManage = [
+            { action: "rename", label: "Rename" },
             { action: "files", label: "Show in Files" },
             { action: "trash", label: "Move to Trash" }
           ]
+          if (host.isUntrustedLauncher(menuItem))
+            return [
+              { action: "trust-open", label: "Trust and Open" },
+              { action: "trust", label: "Allow launching" }
+            ].concat(renameAndManage)
+          return [
+            { action: "open", label: "Open" }
+          ].concat(renameAndManage)
         }
         if (menuKind === "empty")
           return [
@@ -681,10 +772,24 @@ Item {
         acceptedButtons: Qt.LeftButton | Qt.RightButton
         focus: true
         Keys.onPressed: function(event) {
+          if (host.renamingId) {
+            if (event.key === Qt.Key_Escape)
+              host.cancelRename()
+            event.accepted = true
+            return
+          }
           if (event.key === Qt.Key_Escape) {
             if (host.pendingTrust)
               host.clearTrustPrompt()
             panel.closeMenu()
+            event.accepted = true
+          } else if (event.key === Qt.Key_F2 && host.selectedId) {
+            for (var r = 0; r < host.items.length; r++) {
+              if (host.items[r].id === host.selectedId) {
+                host.beginRename(host.items[r], panel.screenName)
+                break
+              }
+            }
             event.accepted = true
           } else if (event.key === Qt.Key_Delete && host.selectedId) {
             for (var i = 0; i < host.items.length; i++) {
@@ -718,6 +823,12 @@ Item {
           }
         }
         onClicked: function(mouse) {
+          if (host.renamingId) {
+            emptyMouse.forceActiveFocus()
+            panel.emptyClicks = 0
+            panel.closeMenu()
+            return
+          }
           host.selectedId = ""
           emptyMouse.forceActiveFocus()
           if (host.pendingTrust) {
@@ -855,6 +966,7 @@ Item {
             }
 
             Text {
+              visible: !panel.host.isRenamingItem(iconRoot.modelData, panel.screenName)
               width: parent.width
               text: panel.host.plainText(iconRoot.modelData.name)
               textFormat: Text.PlainText
@@ -870,10 +982,86 @@ Item {
             }
           }
 
+          Rectangle {
+            visible: panel.host.isRenamingItem(iconRoot.modelData, panel.screenName)
+            z: 8
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.margins: 6
+            height: 46
+            radius: 4
+            color: "#ee1a1a1a"
+            border.width: 1
+            border.color: "#88ffffff"
+
+            TextInput {
+              id: renameInput
+              anchors.fill: parent
+              anchors.margins: 4
+              color: "white"
+              font.pixelSize: 16
+              font.family: Style.fontFamily
+              wrapMode: TextInput.Wrap
+              horizontalAlignment: TextInput.AlignHCenter
+              verticalAlignment: TextInput.AlignVCenter
+              selectByMouse: true
+              clip: true
+              maximumLength: 255
+              property bool finishing: false
+              property bool ready: false
+
+              function commit() {
+                if (finishing)
+                  return
+                finishing = true
+                panel.host.commitRename(iconRoot.modelData, text)
+              }
+
+              function cancel() {
+                if (finishing)
+                  return
+                finishing = true
+                panel.host.cancelRename()
+              }
+
+              Keys.onPressed: function(event) {
+                if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                  commit()
+                  event.accepted = true
+                } else if (event.key === Qt.Key_Escape) {
+                  cancel()
+                  event.accepted = true
+                }
+              }
+              onVisibleChanged: {
+                if (visible) {
+                  finishing = false
+                  ready = false
+                  text = panel.host.plainText(iconRoot.modelData.name)
+                  Qt.callLater(function() {
+                    if (!panel.host.isRenamingItem(iconRoot.modelData, panel.screenName))
+                      return
+                    renameInput.forceActiveFocus()
+                    renameInput.selectAll()
+                    renameInput.ready = true
+                  })
+                } else {
+                  ready = false
+                }
+              }
+              onActiveFocusChanged: {
+                if (visible && ready && !activeFocus)
+                  commit()
+              }
+            }
+          }
+
           MouseArea {
             id: iconMouse
             anchors.fill: parent
             z: 2
+            enabled: !panel.host.isRenamingItem(iconRoot.modelData, panel.screenName)
             acceptedButtons: Qt.LeftButton | Qt.RightButton
             hoverEnabled: true
             preventStealing: true
@@ -980,6 +1168,8 @@ Item {
             plugin.trustAndOpen(item)
           else if (action === "trash")
             plugin.trashItem(item)
+          else if (action === "rename")
+            plugin.beginRename(item, screenName)
           else if (action === "folder")
             plugin.newFolder()
           else if (action === "shortcut")
