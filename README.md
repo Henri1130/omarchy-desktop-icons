@@ -19,7 +19,7 @@ Windows-style files and shortcuts on the Omarchy wallpaper.
 - Click empty wallpaper five times to switch the background (`Super+Ctrl+Space` still works)
 - Untrusted `.desktop` launchers show a warning badge and ask before they run
 
-`.desktop` launchers only run if they are trusted: they came from a real Applications directory (`/usr/share/applications`, `~/.local/share/applications`, and other XDG application dirs), the file is marked executable, or you allow launching from the desktop (same model as GNOME). A folder merely named `applications` is not enough. Names and icons from launchers are treated as plain text and local theme or raster image files only. Remote URLs, inline resources, SVG/GIF icon loading, and unbounded Desktop folders are rejected.
+`.desktop` launchers only run if they are trusted: they came from a real Applications directory (`/usr/share/applications`, `~/.local/share/applications`, and other XDG application dirs), the file is marked executable, or you allow launching from the desktop (same model as GNOME). A folder merely named `applications` is not enough. Names and icons from launchers are treated as plain text and local theme or raster image files only. Remote URLs, inline resources, SVG/GIF icon loading, and unbounded Desktop folders are rejected. Each `.desktop` file is opened once as a regular file (no symlink follow), size-checked on that same descriptor (64 KiB ceiling), and parsed from the bounded bytes — so a path swapped for a FIFO cannot block the indexer, and a large replacement cannot bypass the size check.
 
 ## Install
 
@@ -154,3 +154,9 @@ improving responsiveness, ordering, and accessibility:
 - **New Shortcut:** the hyperlink dialog ships in `bin/create-hyperlink`,
   so published installs can paste a web address without a separate
   `~/.local/bin` copy.
+- **Safe `.desktop` parse:** `read_desktop_entry` (and rename Name updates)
+  no longer call `GLib.KeyFile.load_from_file` after a separate pathname
+  size check. They open with `O_NOFOLLOW|O_NONBLOCK`, require a regular
+  file via `fstat`, read at most 64 KiB through that fd, then parse with
+  `load_from_bytes` — closing the TOCTOU that could hang on a FIFO or
+  accept an oversized swap.
