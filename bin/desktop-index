@@ -100,6 +100,45 @@ def _file_size(path: Path) -> int:
         return 0
 
 
+def _read_regular_file_bounded(path: Path, max_bytes: int) -> bytes | None:
+    """Read at most max_bytes from path via one fd after verifying a regular file.
+
+    Size and type are checked on the opened descriptor (not a second pathname open),
+    so a Desktop entry swapped for a FIFO or a huge file cannot bypass the ceiling
+    or block a frequently polled indexer.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    # Do not follow symlinks; avoid blocking if the path is replaced by a FIFO.
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(os.fspath(path), flags)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        if st.st_size > max_bytes:
+            return None
+        chunks: list[bytes] = []
+        total = 0
+        while total <= max_bytes:
+            try:
+                chunk = os.read(fd, min(65536, max_bytes + 1 - total))
+            except BlockingIOError:
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > max_bytes:
+                return None
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
 def allowed_icon_roots() -> list[Path]:
     roots = [
         Path.home(),
@@ -191,11 +230,12 @@ def allowed_url(url: str) -> bool:
 
 
 def read_desktop_entry(path: Path) -> dict[str, str]:
+    raw = _read_regular_file_bounded(path, MAX_DESKTOP_FILE_BYTES)
+    if raw is None:
+        return {}
     try:
-        if _file_size(path) > MAX_DESKTOP_FILE_BYTES:
-            return {}
         keyfile = GLib.KeyFile()
-        keyfile.load_from_file(str(path), GLib.KeyFileFlags.NONE)
+        keyfile.load_from_bytes(GLib.Bytes.new(raw), GLib.KeyFileFlags.NONE)
         data = {}
         for key in ("Name", "Icon", "Type", "URL", "Exec"):
             try:
@@ -457,10 +497,13 @@ def _desktop_entry_path(path: Path) -> Path:
 
 
 def update_desktop_entry_name(path: Path, name: str) -> None:
+    raw = _read_regular_file_bounded(path, MAX_DESKTOP_FILE_BYTES)
+    if raw is None:
+        return
     try:
         keyfile = GLib.KeyFile()
-        keyfile.load_from_file(
-            str(path),
+        keyfile.load_from_bytes(
+            GLib.Bytes.new(raw),
             GLib.KeyFileFlags.KEEP_COMMENTS | GLib.KeyFileFlags.KEEP_TRANSLATIONS,
         )
         keyfile.set_string("Desktop Entry", "Name", name)

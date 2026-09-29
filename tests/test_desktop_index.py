@@ -209,6 +209,30 @@ class DesktopIndexSecurityTests(unittest.TestCase):
         self.assertEqual(svg_item["preview"], "")
         self.assertEqual(svg_item["kind"], "image")
 
+    def test_read_desktop_entry_uses_bounded_regular_file_fd(self):
+        launcher = self.write_desktop(
+            "ok.desktop",
+            "[Desktop Entry]\nType=Application\nName=OkApp\nExec=/usr/bin/true\n",
+        )
+        data = self.mod.read_desktop_entry(launcher)
+        self.assertEqual(data.get("Name"), "OkApp")
+
+        # Oversized content rejected via the same fd path (not a second open).
+        huge = self.desktop / "oversized.desktop"
+        huge.write_bytes(b"[Desktop Entry]\nName=Big\n" + b"Z" * (self.mod.MAX_DESKTOP_FILE_BYTES + 32))
+        self.assertEqual(self.mod.read_desktop_entry(huge), {})
+
+        # FIFO must not block the indexer and must not parse.
+        fifo = self.desktop / "fifo.desktop"
+        if fifo.exists():
+            fifo.unlink()
+        os.mkfifo(fifo)
+        self.addCleanup(lambda: fifo.unlink(missing_ok=True))
+        self.assertEqual(self.mod.read_desktop_entry(fifo), {})
+        # Still listable without hanging; name falls back to stem.
+        item = self.listed("fifo.desktop")
+        self.assertEqual(item["name"], "fifo")
+
     def test_unique_dest_appends_numeric_suffix(self):
         (self.desktop / "Notes.txt").write_text("x", encoding="utf-8")
         dest = self.mod.unique_dest(self.desktop, "Notes.txt")
