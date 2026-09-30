@@ -532,7 +532,14 @@ Item {
       exclusionMode: ExclusionMode.Ignore
       WlrLayershell.namespace: "desktop-icons"
       WlrLayershell.layer: WlrLayer.Bottom
-      WlrLayershell.keyboardFocus: WlrKeyboardFocus.OnDemand
+      // Ask for the keyboard only while the pointer is over the desktop.
+      // Hyprland hands an OnDemand layer the keyboard when the pointer
+      // enters it, but with click-to-focus it does not take it back when the
+      // pointer returns to a window: that window still counts as active, so
+      // clicking it changes nothing and typing goes nowhere. Dropping to
+      // None on leave makes Hyprland refocus the last window. Keyboard
+      // navigation and rename keep working while the pointer is here.
+      WlrLayershell.keyboardFocus: desktopHover.hovered ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
       anchors { top: true; bottom: true; left: true; right: true }
       // Default mask is the opaque pixels only, so a transparent desktop
       // lets clicks fall through to omarchy-background (double-click
@@ -541,6 +548,9 @@ Item {
         width: panel.width
         height: panel.height
       }
+
+      // Declared on the window, so it tracks the whole surface, icons included.
+      HoverHandler { id: desktopHover }
 
       readonly property string screenName: modelData.name || "default"
       property int padTop: host.padTopFor(modelData)
