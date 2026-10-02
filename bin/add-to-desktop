@@ -21,7 +21,9 @@ if _BIN_DIR not in sys.path:
 from common import (
     desktop_dir,
     guess_icon,
+    has_desktop_control_chars,
     is_trusted_application_source,
+    require_safe_desktop_field,
     unique_dest,
 )
 
@@ -66,6 +68,10 @@ def file_uri(path: Path) -> str:
 
 
 def trust_desktop_file(path: Path) -> None:
+    name = read_desktop_name(path)
+    if name is not None and has_desktop_control_chars(name):
+        # Never auto-trust a launcher whose Name could have been key-injected.
+        return
     try:
         path.chmod(path.stat().st_mode | 0o111)
     except OSError:
@@ -89,15 +95,16 @@ def read_desktop_name(path: Path) -> str | None:
 
 
 def write_link_desktop(dest: Path, name: str, target: Path) -> None:
-    icon = guess_icon(target)
-    content = (
-        "[Desktop Entry]\n"
-        "Type=Link\n"
-        f"Name={name}\n"
-        f"URL={file_uri(target)}\n"
-        f"Icon={icon}\n"
-    )
-    dest.write_text(content, encoding="utf-8")
+    # Reject before generating: foreign filenames must not inject desktop keys.
+    name = require_safe_desktop_field(name, "Name")
+    icon = require_safe_desktop_field(guess_icon(target), "Icon")
+    url = require_safe_desktop_field(file_uri(target), "URL")
+    keyfile = GLib.KeyFile()
+    keyfile.set_string("Desktop Entry", "Type", "Link")
+    keyfile.set_string("Desktop Entry", "Name", name)
+    keyfile.set_string("Desktop Entry", "URL", url)
+    keyfile.set_string("Desktop Entry", "Icon", icon)
+    keyfile.save_to_file(str(dest))
     trust_desktop_file(dest)
 
 
@@ -123,8 +130,11 @@ def add_shortcut(source: Path, desktop: Path) -> Path:
         shutil.copy2(source, dest)
         return dest
 
-    dest = unique_path(desktop, source.name, ".desktop")
-    write_link_desktop(dest, source.name, source)
+    # source.name is foreign input: reject controls, then serialize via KeyFile.
+    require_safe_desktop_field(source.name, "Name")
+    display_name = sanitize_name(source.name)
+    dest = unique_path(desktop, display_name, ".desktop")
+    write_link_desktop(dest, display_name, source)
     return dest
 
 
