@@ -464,6 +464,15 @@ class QmlSecurityTests(unittest.TestCase):
         self.assertGreater(text_elements, 0)
         self.assertEqual(plain_text, text_elements)
 
+    def test_desktop_layer_releases_keyboard(self):
+        source = (ROOT / "Service.qml").read_text(encoding="utf-8")
+        self.assertNotIn("keyboardFocus: WlrKeyboardFocus.OnDemand\n", source)
+        self.assertIn(
+            "WlrLayershell.keyboardFocus: desktopHover.hovered ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None",
+            source,
+        )
+        self.assertIn("HoverHandler { id: desktopHover }", source)
+
     def test_image_source_uses_safe_helper(self):
         source = (ROOT / "Service.qml").read_text(encoding="utf-8")
         self.assertIn("source: panel.host.iconSource(iconRoot.modelData)", source)

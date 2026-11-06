@@ -135,6 +135,11 @@ improving responsiveness, ordering, and accessibility:
 - **Keyboard navigation:** `Tab` / `Shift+Tab` / arrow keys move the
   selection in visual grid order (top-to-bottom, left-to-right); `Enter`
   opens, `Delete` trashes, `Esc` cancels.
+- **Keyboard goes back to your window:** the desktop only asks for the
+  keyboard while the pointer is over it. Before, with click-to-focus
+  (`follow_mouse = 2`), the keyboard could stay on the desktop after the
+  pointer returned to a window, so typing went nowhere until you switched
+  windows.
 - **New items at the bottom, no overlap:** added shortcuts or folders are
   placed in the bottom-most free grid cell (just past the last icon),
   skipping any cell already occupied by a manually dragged icon. Existing
