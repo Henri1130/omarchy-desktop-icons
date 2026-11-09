@@ -10,10 +10,11 @@ Windows-style files and shortcuts on the Omarchy wallpaper.
 
 ## What it does
 
-- Shows `~/Desktop` as icons on every monitor, under windows and the bar
+- Shows `~/Desktop` as icons under windows and the bar; with several monitors
+  the desktop is extended (each icon lives on one screen, like Windows)
 - Click an icon to open it; drag to move it (snaps to a grid)
 - Right-click empty wallpaper: New Folder, New Shortcut, Pin application, Add files
-- Right-click an icon: Open, Rename, Show in Files, Move to Trash
+- Right-click an icon: Open, Move to other screen, Rename, Show in Files, Move to Trash
 - Drag an icon onto Trash, or drop files from Files onto Trash, to delete them
 - Drag files from Files onto the wallpaper to copy them there
 - Click empty wallpaper five times to switch the background (`Super+Ctrl+Space` still works)
@@ -90,12 +91,30 @@ o.window("org.omarchy.create-hyperlink", { float = true, center = true })
 | Rename | Right-click an icon → Rename, or select it and press `F2` |
 | Allow a launcher | Click **Trust and Open**, or right-click **Allow launching** |
 | Move an icon | Drag it; it snaps to the grid |
+| Move to another monitor | Drag it onto the other screen (or against the shared edge), or right-click → Move to other screen |
 | Put a file on the desktop | Drag it onto the wallpaper, or copy it into `~/Desktop` |
 | Pin a shortcut | Right-click wallpaper → Pin application… / New Shortcut… |
 | Trash | Right-click an icon → Move to Trash, press Delete, or drag onto Trash |
 | Change wallpaper | Click empty wallpaper five times, or `Super+Ctrl+Space` |
 
 **Pin application** from Applications marks launchers as trusted. **Send to Desktop** and copies of a `.desktop` file only auto-trust when the source is under a real Applications directory. A `.desktop` file that merely appears in `~/Desktop` without the executable bit does not.
+
+## Multiple monitors
+
+The desktop spans all monitors like an extended Windows desktop: each icon
+belongs to exactly one screen, and dragging it onto another monitor moves it
+there (snapped to the nearest free cell). With three or more screens the
+right-click menu lists **Move to <output>** for each one.
+
+New icons, and icons whose screen is unplugged, show on the default screen:
+the first screen Quickshell reports, or the output named in
+`DESKTOP_ICONS_DEFAULT_SCREEN` (for example `eDP-1`) if it is connected.
+Icons return to their own screen when it is plugged back in.
+
+Ownership is stored in the same `~/.config/omarchy/desktop-icon-positions.json`
+under a `__owners` key; per-screen positions are unchanged. Older files
+without `__owners` keep working: every icon starts on the default screen at
+its saved position for that screen.
 
 ## Update
 
