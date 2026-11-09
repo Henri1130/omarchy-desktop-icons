@@ -28,6 +28,13 @@ Item {
   property string renamingId: ""
   property string renamingScreen: ""
   property bool renameBusy: false
+  // Guards so positions are never rewritten before both the Desktop index
+  // and the saved positions file have been read.
+  property bool itemsLoaded: false
+  property bool posLoaded: false
+  // Screen that new or unassigned icons land on. Empty = first screen
+  // Quickshell reports. Override with DESKTOP_ICONS_DEFAULT_SCREEN=eDP-1.
+  property string preferredScreen: Quickshell.env("DESKTOP_ICONS_DEFAULT_SCREEN") || ""
 
   readonly property string home: Quickshell.env("HOME")
   readonly property string pluginDir: (manifest && manifest.__sourceDir)
@@ -235,17 +242,11 @@ Item {
   }
 
   function visualOrder(screenName) {
-    var items = root.items
-    if (!items || items.length === 0)
+    var name = screenName || root.defaultScreenName
+    var arr = root.itemsFor(name)
+    if (arr.length === 0)
       return []
-    var ps = screenName ? root.positions[screenName] : null
-    if (!ps) {
-      for (var k in root.positions) {
-        ps = root.positions[k]
-        break
-      }
-    }
-    var arr = items.slice()
+    var ps = root.positions ? root.positions[name] : null
     arr.sort(function(a, b) {
       var pa = ps ? ps[a.id] : null
       var pb = ps ? ps[b.id] : null
@@ -405,6 +406,7 @@ Item {
       }
       var desktop = data.desktop ? String(data.desktop) : root.desktopPath
       var next = JSON.stringify({ desktop: desktop, items: items })
+      root.itemsLoaded = true
       if (next === root.itemsJson)
         return
       root.desktopPath = desktop
@@ -445,8 +447,168 @@ Item {
     if (!next[screenName])
       next[screenName] = ({})
     next[screenName][itemId] = { x: Math.round(x), y: Math.round(y) }
+    if (!Util.isPlainObject(next.__owners))
+      next.__owners = ({})
+    next.__owners[itemId] = screenName
     root.positions = next
     root.savePositions()
+  }
+
+  // ---- Multi-monitor: extended desktop ----
+  // Each item is owned by exactly one screen, recorded in
+  // positions.__owners[itemId]. Items without an owner (or whose owner screen
+  // is unplugged) show on the default screen until it comes back.
+  readonly property var screenList: Quickshell.screens
+  readonly property string defaultScreenName: {
+    var list = root.screenList || []
+    if (root.preferredScreen) {
+      for (var i = 0; i < list.length; i++) {
+        if (list[i] && list[i].name === root.preferredScreen)
+          return root.preferredScreen
+      }
+    }
+    return (list.length > 0 && list[0]) ? String(list[0].name || "default") : "default"
+  }
+
+  function isMetaKey(key) {
+    return String(key).indexOf("__") === 0
+  }
+
+  function screenByName(name) {
+    var list = root.screenList || []
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && String(list[i].name || "default") === name)
+        return list[i]
+    }
+    return null
+  }
+
+  function ownerOf(itemId) {
+    var owners = root.positions ? root.positions.__owners : null
+    var o = Util.isPlainObject(owners) ? owners[itemId] : null
+    if (o && root.screenByName(String(o)))
+      return String(o)
+    return root.defaultScreenName
+  }
+
+  function itemsFor(screenName) {
+    var out = []
+    var items = root.items || []
+    for (var i = 0; i < items.length; i++) {
+      if (root.ownerOf(items[i].id) === screenName)
+        out.push(items[i])
+    }
+    return out
+  }
+
+  function gridFor(screen) {
+    var w = screen ? screen.width : 0
+    var h = screen ? screen.height : 0
+    var pl = root.padLeftFor(screen)
+    var pt = root.padTopFor(screen)
+    return {
+      cols: Math.max(1, Math.floor((w - pl - root.padRight) / root.cellW)),
+      rows: Math.max(1, Math.floor(Math.max(root.cellH, h - pt - root.padBottom) / root.cellH)),
+      padLeft: pl,
+      padTop: pt
+    }
+  }
+
+  // Panel-local point -> another screen, using the global layout from
+  // ShellScreen x/y. When the pointer is pinned at the very edge of its own
+  // screen, probe just past that edge so pushing an icon against the edge
+  // also hands it to the neighbouring monitor.
+  function crossScreenTarget(ownName, lx, ly, w, h) {
+    var own = root.screenByName(ownName)
+    if (!own)
+      return null
+    var gx = own.x + lx
+    var gy = own.y + ly
+    var probeX = false
+    var probeY = false
+    if (lx >= 0 && lx <= 1) { gx = own.x - 2; probeX = true }
+    else if (lx <= w && lx >= w - 2) { gx = own.x + w + 1; probeX = true }
+    if (ly >= 0 && ly <= 1) { gy = own.y - 2; probeY = true }
+    else if (ly <= h && ly >= h - 2) { gy = own.y + h + 1; probeY = true }
+    var list = root.screenList || []
+    var best = null
+    for (var i = 0; i < list.length; i++) {
+      var s = list[i]
+      if (!s || String(s.name || "default") === ownName)
+        continue
+      var inX = gx >= s.x && gx < s.x + s.width
+      var inY = gy >= s.y && gy < s.y + s.height
+      if ((inX && inY) || (probeX && inX && !probeY) || (probeY && inY && !probeX)) {
+        best = s
+        break
+      }
+    }
+    if (!best)
+      return null
+    return {
+      name: String(best.name || "default"),
+      x: Math.min(Math.max(gx, best.x), best.x + best.width - 1) - best.x,
+      y: Math.min(Math.max(gy, best.y), best.y + best.height - 1) - best.y
+    }
+  }
+
+  // Move an item to a screen. x/y are local top-left coordinates on that
+  // screen (null = first free cell). Snaps to the grid and avoids occupied
+  // cells by picking the nearest free one.
+  function placeOnScreen(itemId, screenName, x, y) {
+    var screen = root.screenByName(screenName)
+    if (!screen || !itemId)
+      return
+    var g = root.gridFor(screen)
+    var next = JSON.parse(JSON.stringify(root.positions || {}))
+    for (var key in next) {
+      if (root.isMetaKey(key) || key === screenName)
+        continue
+      if (next[key] && next[key][itemId] !== undefined)
+        delete next[key][itemId]
+    }
+    if (!Util.isPlainObject(next[screenName]))
+      next[screenName] = ({})
+    var byScreen = next[screenName]
+    var occupied = {}
+    for (var id in byScreen) {
+      if (id === itemId || root.ownerOf(id) !== screenName)
+        continue
+      var p = byScreen[id]
+      if (!p)
+        continue
+      occupied[Math.round((p.x - g.padLeft) / root.cellW) + "," + Math.round((p.y - g.padTop) / root.cellH)] = true
+    }
+    var col = 0
+    var row = 0
+    var found = false
+    if (typeof x === "number" && typeof y === "number" && isFinite(x) && isFinite(y)) {
+      var wc = Math.min(Math.max(0, Math.round((x - g.padLeft) / root.cellW)), g.cols - 1)
+      var wr = Math.min(Math.max(0, Math.round((y - g.padTop) / root.cellH)), g.rows - 1)
+      var bestD = -1
+      for (var c = 0; c < g.cols; c++) {
+        for (var r = 0; r < g.rows; r++) {
+          if (occupied[c + "," + r])
+            continue
+          var d = (c - wc) * (c - wc) + (r - wr) * (r - wr)
+          if (bestD < 0 || d < bestD) { bestD = d; col = c; row = r; found = true }
+        }
+      }
+      if (!found) { col = wc; row = wr }
+    } else {
+      for (var c2 = 0; c2 < g.cols && !found; c2++) {
+        for (var r2 = 0; r2 < g.rows; r2++) {
+          if (!occupied[c2 + "," + r2]) { col = c2; row = r2; found = true; break }
+        }
+      }
+    }
+    byScreen[itemId] = { x: Math.round(g.padLeft + col * root.cellW), y: Math.round(g.padTop + row * root.cellH) }
+    if (!Util.isPlainObject(next.__owners))
+      next.__owners = ({})
+    next.__owners[itemId] = screenName
+    root.positions = next
+    root.savePositions()
+    root.selectedId = itemId
   }
 
   Process {
@@ -488,8 +650,8 @@ Item {
     watchChanges: true
     atomicWrites: true
     printErrors: false
-    onLoaded: root.applyPositions(text())
-    onLoadFailed: root.positions = ({})
+    onLoaded: { root.applyPositions(text()); root.posLoaded = true }
+    onLoadFailed: { root.positions = ({}); root.posLoaded = true }
     onFileChanged: reload()
   }
 
@@ -553,6 +715,38 @@ Item {
       property int emptyClicks: 0
       property bool _initialized: false
       property var _knownIds: ({})
+      // Items owned by this screen. Only reassigned when the owned set or
+      // item data changes, so the Repeater is not rebuilt on every drag.
+      property var myItems: []
+      property string _myKey: ""
+
+      function refreshMine() {
+        var list = host.itemsFor(panel.screenName)
+        var key = JSON.stringify(list)
+        if (key === panel._myKey)
+          return
+        panel._myKey = key
+        panel.myItems = list
+      }
+
+      onMyItemsChanged: panel.maybeRepack()
+      Component.onCompleted: panel.refreshMine()
+
+      readonly property var moveEntries: {
+        var list = host.screenList || []
+        var others = []
+        for (var i = 0; i < list.length; i++) {
+          var n = String((list[i] && list[i].name) || "default")
+          if (n !== panel.screenName)
+            others.push(n)
+        }
+        if (others.length === 1)
+          return [{ action: "moveto:" + others[0], label: "Move to other screen" }]
+        var out = []
+        for (var j = 0; j < others.length; j++)
+          out.push({ action: "moveto:" + others[j], label: "Move to " + others[j] })
+        return out
+      }
 
       function layoutPos(index) {
         var availH = Math.max(host.cellH, panel.height - panel.padTop - host.padBottom)
@@ -584,8 +778,8 @@ Item {
       }
 
       function itemAt(x, y, exceptId) {
-        for (var i = 0; i < host.items.length; i++) {
-          var item = host.items[i]
+        for (var i = 0; i < panel.myItems.length; i++) {
+          var item = panel.myItems[i]
           if (exceptId && item.id === exceptId)
             continue
           var pos = panel.posFor(item, i)
@@ -599,9 +793,9 @@ Item {
         var item = host.pendingTrust
         if (!item)
           return null
-        for (var i = 0; i < host.items.length; i++) {
-          if (host.items[i].id === item.id)
-            return panel.posFor(host.items[i], i)
+        for (var i = 0; i < panel.myItems.length; i++) {
+          if (panel.myItems[i].id === item.id)
+            return panel.posFor(panel.myItems[i], i)
         }
         return null
       }
@@ -613,14 +807,28 @@ Item {
       // their positions; stale positions for removed items are cleaned up.
       // Triggered only on add/remove, never on a drag or a routine refresh.
       function assignMissing() {
+        if (!host.itemsLoaded || !host.posLoaded)
+          return
+        var mine = host.itemsFor(panel.screenName)
         var cur = {}
-        for (var i = 0; i < host.items.length; i++)
-          cur[host.items[i].id] = true
+        for (var i = 0; i < mine.length; i++)
+          cur[mine[i].id] = true
         var next = JSON.parse(JSON.stringify(host.positions || {}))
         if (!next[panel.screenName])
           next[panel.screenName] = {}
         var byScreen = next[panel.screenName]
         var dirty = false
+        if (Util.isPlainObject(next.__owners)) {
+          var all = {}
+          for (var a = 0; a < host.items.length; a++)
+            all[host.items[a].id] = true
+          for (var oid in next.__owners) {
+            if (!all[oid]) {
+              delete next.__owners[oid]
+              dirty = true
+            }
+          }
+        }
         for (var id in byScreen) {
           if (!cur[id]) {
             delete byScreen[id]
@@ -662,8 +870,8 @@ Item {
             lastIdx = idx
         }
         var nextIdx = firstFree(lastIdx + 1)
-        for (var i = 0; i < host.items.length; i++) {
-          var item = host.items[i]
+        for (var i = 0; i < mine.length; i++) {
+          var item = mine[i]
           if (!byScreen[item.id]) {
             var pp = panel.layoutPos(nextIdx)
             var pos = { x: Math.round(pp.x), y: Math.round(pp.y) }
@@ -683,9 +891,11 @@ Item {
       // First load still assigns missing positions so unsaved items do not
       // land on top of dragged ones; existing saved positions stay put.
       function maybeRepack() {
+        if (!host.itemsLoaded || !host.posLoaded)
+          return
         var cur = {}
-        for (var i = 0; i < host.items.length; i++)
-          cur[host.items[i].id] = true
+        for (var i = 0; i < panel.myItems.length; i++)
+          cur[panel.myItems[i].id] = true
         if (!panel._initialized) {
           panel._knownIds = cur
           panel._initialized = true
@@ -731,7 +941,7 @@ Item {
             return [
               { action: "open", label: "Open Trash" },
               { action: "files", label: "Show in Files" }
-            ]
+            ].concat(panel.moveEntries)
           var renameAndManage = [
             { action: "rename", label: "Rename" },
             { action: "files", label: "Show in Files" },
@@ -741,10 +951,10 @@ Item {
             return [
               { action: "trust-open", label: "Trust and Open" },
               { action: "trust", label: "Allow launching" }
-            ].concat(renameAndManage)
+            ].concat(panel.moveEntries).concat(renameAndManage)
           return [
             { action: "open", label: "Open" }
-          ].concat(renameAndManage)
+          ].concat(panel.moveEntries).concat(renameAndManage)
         }
         if (menuKind === "empty")
           return [
@@ -887,7 +1097,7 @@ Item {
       }
 
       Repeater {
-        model: panel.host.items
+        model: panel.myItems
 
         Item {
           id: iconRoot
@@ -899,6 +1109,13 @@ Item {
           z: iconMouse.drag.active ? 6 : 2
           property real pressX: 0
           property real pressY: 0
+          // Last pointer position during a drag, used if the compositor
+          // cancels the grab when the pointer leaves the screen.
+          property real grabX: 0
+          property real grabY: 0
+          property real lastLX: -1
+          property real lastLY: -1
+          property bool wasDragging: false
 
           Binding on x {
             value: panel.posFor(iconRoot.modelData, iconRoot.index).x
@@ -1069,18 +1286,64 @@ Item {
             drag.target: iconRoot
             drag.axis: Drag.XAndYAxis
             drag.threshold: 36
-            drag.minimumX: 0
-            drag.minimumY: 0
-            drag.maximumX: Math.max(0, panel.width - iconRoot.width)
-            drag.maximumY: Math.max(0, panel.height - iconRoot.height)
+            drag.minimumX: -iconRoot.width
+            drag.minimumY: -iconRoot.height
+            drag.maximumX: panel.width
+            drag.maximumY: panel.height
+            onPositionChanged: function(mouse) {
+              if (!iconMouse.drag.active)
+                return
+              var lp = iconMouse.mapToItem(panel.contentItem, mouse.x, mouse.y)
+              iconRoot.lastLX = lp.x
+              iconRoot.lastLY = lp.y
+              iconRoot.wasDragging = true
+            }
+            onCanceled: {
+              if (!iconRoot.wasDragging)
+                return
+              iconRoot.wasDragging = false
+              var lx = iconRoot.lastLX
+              var ly = iconRoot.lastLY
+              if (lx < 12) lx = Math.min(lx, 0.5)
+              else if (lx > panel.width - 12) lx = Math.max(lx, panel.width - 0.5)
+              if (ly < 12) ly = Math.min(ly, 0.5)
+              else if (ly > panel.height - 12) ly = Math.max(ly, panel.height - 0.5)
+              var cross = panel.host.crossScreenTarget(panel.screenName, lx, ly, panel.width, panel.height)
+              if (!cross)
+                return
+              var moveId = iconRoot.modelData.id
+              var moveHost = panel.host
+              var tx = cross.x - iconRoot.grabX
+              var ty = cross.y - iconRoot.grabY
+              var tname = cross.name
+              Qt.callLater(function() { moveHost.placeOnScreen(moveId, tname, tx, ty) })
+            }
             onPressed: function(mouse) {
               iconRoot.pressX = iconRoot.x
               iconRoot.pressY = iconRoot.y
+              iconRoot.grabX = mouse.x
+              iconRoot.grabY = mouse.y
+              iconRoot.wasDragging = false
               panel.host.selectedId = iconRoot.modelData.id
               emptyMouse.forceActiveFocus()
             }
             onReleased: function(mouse) {
+              iconRoot.wasDragging = false
               if (!iconMouse.drag.active) return
+              // Dropped on (or pushed against the edge toward) another
+              // screen: hand the icon to that screen. Deferred, because the
+              // move destroys this delegate.
+              var lp = iconMouse.mapToItem(panel.contentItem, mouse.x, mouse.y)
+              var cross = panel.host.crossScreenTarget(panel.screenName, lp.x, lp.y, panel.width, panel.height)
+              if (cross) {
+                var moveId = iconRoot.modelData.id
+                var moveHost = panel.host
+                var tx = cross.x - mouse.x
+                var ty = cross.y - mouse.y
+                var tname = cross.name
+                Qt.callLater(function() { moveHost.placeOnScreen(moveId, tname, tx, ty) })
+                return
+              }
               var target = panel.itemAt(
                 iconRoot.x + iconRoot.width / 2,
                 iconRoot.y + iconRoot.height / 2,
@@ -1090,7 +1353,13 @@ Item {
                 panel.host.trashItem(iconRoot.modelData)
                 return
               }
-              var snapped = panel.snap(iconRoot.x, iconRoot.y)
+              var cx = Math.min(Math.max(0, iconRoot.x), Math.max(0, panel.width - iconRoot.width))
+              var cy = Math.min(Math.max(0, iconRoot.y), Math.max(0, panel.height - iconRoot.height))
+              var snapped = panel.snap(cx, cy)
+              if (snapped.x > panel.width - iconRoot.width && snapped.x - panel.host.cellW >= panel.padLeft)
+                snapped.x -= panel.host.cellW
+              if (snapped.y > panel.height - iconRoot.height && snapped.y - panel.host.cellH >= panel.padTop)
+                snapped.y -= panel.host.cellH
               iconRoot.x = snapped.x
               iconRoot.y = snapped.y
               panel.host.setItemPos(panel.screenName, iconRoot.modelData.id, snapped.x, snapped.y)
@@ -1180,6 +1449,10 @@ Item {
             plugin.addFiles()
           else if (action === "refresh")
             plugin.refresh()
+          else if (action.indexOf("moveto:") === 0) {
+            if (item && item.id)
+              plugin.placeOnScreen(item.id, action.slice(7), null, null)
+          }
           else if (action === "files") {
             if (item && item.path)
               plugin.revealItem(item)
@@ -1246,7 +1519,21 @@ Item {
       Connections {
         target: host
         function onItemsChanged() {
-          panel.maybeRepack()
+          Qt.callLater(panel.refreshMine)
+        }
+        function onPositionsChanged() {
+          Qt.callLater(panel.refreshMine)
+        }
+        function onDefaultScreenNameChanged() {
+          Qt.callLater(panel.refreshMine)
+        }
+        function onItemsLoadedChanged() {
+          Qt.callLater(panel.refreshMine)
+          Qt.callLater(panel.maybeRepack)
+        }
+        function onPosLoadedChanged() {
+          Qt.callLater(panel.refreshMine)
+          Qt.callLater(panel.maybeRepack)
         }
       }
 
