@@ -13,7 +13,7 @@ Windows-style files and shortcuts on the Omarchy wallpaper.
 - Shows `~/Desktop` as icons under windows and the bar; with several monitors
   the desktop is extended (each icon lives on one screen, like Windows)
 - Click an icon to open it; drag to move it (snaps to a grid)
-- Right-click empty wallpaper: New Folder, New Shortcut, Pin application, Add files
+- Right-click empty wallpaper: New Folder, New Shortcut, Pin application, Add files, Sleep, Reboot
 - Right-click an icon: Open, Move to other screen, Rename, Show in Files, Move to Trash
 - Drag an icon onto Trash, or drop files from Files onto Trash, to delete them
 - Drag files from Files onto the wallpaper to copy them there
@@ -95,6 +95,7 @@ o.window("org.omarchy.create-hyperlink", { float = true, center = true })
 | Put a file on the desktop | Drag it onto the wallpaper, or copy it into `~/Desktop` |
 | Pin a shortcut | Right-click wallpaper → Pin application… / New Shortcut… |
 | Trash | Right-click an icon → Move to Trash, press Delete, or drag onto Trash |
+| Sleep / Reboot | Right-click wallpaper → Sleep, or Reboot… then Reboot now |
 | Change wallpaper | Click empty wallpaper five times, or `Super+Ctrl+Space` |
 
 **Pin application** from Applications marks launchers as trusted. **Send to Desktop** and copies of a `.desktop` file only auto-trust when the source is under a real Applications directory. A `.desktop` file that merely appears in `~/Desktop` without the executable bit does not.

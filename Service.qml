@@ -370,6 +370,25 @@ Item {
     ])
   }
 
+  property bool confirmReboot: false
+
+  function sleepMachine() {
+    Quickshell.execDetached(["systemctl", "suspend"])
+  }
+
+  function requestReboot() {
+    root.confirmReboot = true
+  }
+
+  function cancelReboot() {
+    root.confirmReboot = false
+  }
+
+  function rebootMachine() {
+    root.confirmReboot = false
+    Quickshell.execDetached(["omarchy", "reboot"])
+  }
+
   function placeUrls(urls, mode) {
     if (!urls || urls.length === 0) return
     var cmd = ["/usr/bin/python3", root.indexScript, "--mode", mode || "copy", "--place"]
@@ -921,6 +940,7 @@ Item {
       }
 
       function openEmptyMenu(mouse) {
+        host.cancelReboot()
         menuKind = "empty"
         menuItem = null
         menuX = mouse.x
@@ -956,15 +976,23 @@ Item {
             { action: "open", label: "Open" }
           ].concat(panel.moveEntries).concat(renameAndManage)
         }
-        if (menuKind === "empty")
+        if (menuKind === "empty") {
+          if (host.confirmReboot)
+            return [
+              { action: "reboot-yes", label: "Reboot now" },
+              { action: "reboot-no", label: "Cancel" }
+            ]
           return [
             { action: "folder", label: "New Folder" },
             { action: "shortcut", label: "New Shortcut…" },
             { action: "pin", label: "Pin application…" },
             { action: "addfiles", label: "Add files…" },
             { action: "files", label: "Open Desktop Folder" },
-            { action: "refresh", label: "Refresh" }
+            { action: "refresh", label: "Refresh" },
+            { action: "sleep", label: "Sleep" },
+            { action: "reboot", label: "Reboot…" }
           ]
+        }
         return []
       }
 
@@ -1426,7 +1454,14 @@ Item {
           var item = currentItem
           var plugin = pluginHost
           var screenName = currentScreen
+          if (action === "reboot") {
+            if (plugin)
+              plugin.requestReboot()
+            return
+          }
           closeTick += 1
+          if (plugin)
+            plugin.cancelReboot()
           if (!plugin)
             return
           if (action === "open")
@@ -1449,6 +1484,12 @@ Item {
             plugin.addFiles()
           else if (action === "refresh")
             plugin.refresh()
+          else if (action === "sleep")
+            plugin.sleepMachine()
+          else if (action === "reboot-yes")
+            plugin.rebootMachine()
+          else if (action === "reboot-no")
+            return
           else if (action.indexOf("moveto:") === 0) {
             if (item && item.id)
               plugin.placeOnScreen(item.id, action.slice(7), null, null)
